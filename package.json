@@ -4,6 +4,7 @@
   "description": "Auto-tailor resumes, search and auto-apply to LinkedIn + Indeed jobs",
   "type": "commonjs",
   "scripts": {
+    "setup": "node setup.js",
     "login:linkedin": "node login.js --board linkedin",
     "login:indeed": "node login.js --board indeed",
     "tailor": "node tailor.js",

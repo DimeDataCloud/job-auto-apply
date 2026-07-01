@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to config.json (gitignored). `node setup.js` writes this for you, matched to your hardware. Models must be installed in Ollama — check with `ollama list`.",
+  "ollamaUrl": "http://localhost:11434",
+  "tailorModel": "gemma4:latest",
+  "answerModel": "qwen2.5:1.5b"
+}

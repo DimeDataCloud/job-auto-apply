@@ -29,8 +29,11 @@ const PROFILE = JSON.parse(fs.readFileSync(path.join(ROOT, 'applicant-profile.js
 // Master resume — used as grounding context when the LLM answers screening questions.
 const RESUME_NAME = PROFILE.activeResume || 'example';
 const MASTER = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8')); } catch { return {}; } })();
-const OLLAMA_MODEL = 'gemma4:latest'; // heavy reasoning model — resume tailoring (tailor.js)
-const OLLAMA_FAST = 'qwen2.5:1.5b';   // fast instruct model — short screening answers (~0.6s vs ~60s)
+// Load user config (written by setup.js); fall back to local defaults.
+const CFG = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf-8')); } catch { return {}; } })();
+const OLLAMA_BASE = (CFG.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+const OLLAMA_MODEL = CFG.tailorModel || 'gemma3';        // heavy model — resume tailoring (tailor.js)
+const OLLAMA_FAST = CFG.answerModel || 'qwen2.5:1.5b';   // fast model — short screening answers (~0.6s)
 const _answerCache = new Map();       // question → answer, avoids re-asking on page re-renders
 
 function parseArgs() {
@@ -1447,7 +1450,7 @@ function callOllamaShort(prompt) {
   const http = require('http');
   const body = JSON.stringify({ model: OLLAMA_FAST, prompt, stream: false, options: { temperature: 0.2, num_predict: 400 } });
   return new Promise((resolve, reject) => {
-    const req = http.request('http://localhost:11434/api/generate', {
+    const req = http.request(OLLAMA_BASE + '/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout: 60000,
     }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d).response || ''); } catch (e) { reject(e); } }); });
     req.on('error', reject);

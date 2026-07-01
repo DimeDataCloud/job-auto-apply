@@ -22,11 +22,33 @@ Automated job application system. Tailors your resume for each job, searches Lin
 npm install playwright playwright-extra puppeteer-extra-plugin-stealth imapflow
 ```
 
-### 2. Install Ollama + Model
+### 2. Run Guided Setup (recommended)
 
 ```bash
-# Install Ollama: https://ollama.com
-ollama pull glm-5.2:cloud
+npm run setup        # or: node setup.js
+```
+
+This walks you through everything unique to your machine and accounts:
+- **Detects your CPU / RAM / GPU** and recommends local models that fit your hardware
+- Writes `config.json` so the tools use *your* models (no code edits)
+- Logs you into LinkedIn (and optionally Indeed)
+- Checks email verification credentials
+- Validates your profile + resume and lists anything missing
+
+Preview the model recommendation without changing anything:
+
+```bash
+node setup.js --check
+```
+
+The steps below are what setup.js configures for you — do them manually if you prefer.
+
+### 2a. Install Ollama + Models
+
+```bash
+# Install Ollama: https://ollama.com  →  then in a separate terminal: ollama serve
+ollama pull qwen2.5:1.5b     # fast — screening answers
+ollama pull gemma3           # quality — resume tailoring (or any model that fits your RAM/VRAM)
 ```
 
 ### 3. Set Up Your Profile

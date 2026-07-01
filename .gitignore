@@ -10,6 +10,9 @@ output/
 # Real applicant data — use applicant-profile.example.json as template
 applicant-profile.json
 
+# User config — models/hardware are machine-specific; written by setup.js
+config.json
+
 # Real master resumes — use master-resumes/example.json as template
 master-resumes/*.json
 !master-resumes/example.json

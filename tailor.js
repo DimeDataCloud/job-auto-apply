@@ -21,8 +21,11 @@ const PROFILE_PATH = path.join(ROOT, 'applicant-profile.json');
 const PROFILE_DATA = fs.existsSync(PROFILE_PATH) ? JSON.parse(fs.readFileSync(PROFILE_PATH, 'utf-8')) : {};
 const RESUME_NAME = PROFILE_DATA.activeResume || 'example';
 const MASTER = JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8'));
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const MODEL = 'gemma4:latest';
+// Load user config (written by setup.js); fall back to local defaults.
+const CFG = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf-8')); } catch { return {}; } })();
+const OLLAMA_BASE = (CFG.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+const OLLAMA_URL = OLLAMA_BASE + '/api/generate';
+const MODEL = CFG.tailorModel || 'gemma3';
 
 // ── CLI ──
 function parseArgs() {
