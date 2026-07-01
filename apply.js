@@ -1833,10 +1833,16 @@ async function main() {
     // Auto-generate tailored resume if none provided
     if (!opts.resume) {
       console.log('\n  No resume — extracting JD and generating tailored resume...');
+      // Wait for job title to render (LinkedIn SPA loads async)
+      await page.waitForSelector('h1, .job-details-jobs-unified-top-card__job-title, .t-24', { timeout: 15000 }).catch(() => {});
+      await delay(2000);
       const jobInfo = await page.evaluate(() => {
-        const title = (document.querySelector('.job-details-jobs-unified-top-card__job-title, .topcard__title, h1') || {}).innerText?.trim() || 'Unknown Role';
-        const company = (document.querySelector('.job-details-jobs-unified-top-card__company-name a, .topcard__org-name-link, [class*="company-name"]') || {}).innerText?.trim() || 'Unknown Company';
-        const jd = (document.querySelector('.jobs-description__content, .jobs-description-content, .jobs-box__html-content, .description__text, main') || document.body).innerText?.slice(0, 8000) || '';
+        const titleEl = document.querySelector('.job-details-jobs-unified-top-card__job-title h1, .job-details-jobs-unified-top-card__job-title, .t-24.t-bold, h1');
+        const companyEl = document.querySelector('.job-details-jobs-unified-top-card__company-name a, .job-details-jobs-unified-top-card__primary-description a, .topcard__org-name-link, a[href*="/company/"]');
+        const jdEl = document.querySelector('.jobs-description__content, .jobs-description-content, .jobs-box__html-content, #job-details, [class*="description__text"]');
+        const title = (titleEl?.innerText || '').trim() || 'Unknown Role';
+        const company = (companyEl?.innerText || '').trim() || 'Unknown Company';
+        const jd = (jdEl || document.body).innerText?.slice(0, 8000) || '';
         return { title, company, jd };
       });
       console.log('  Job: ' + jobInfo.title + ' at ' + jobInfo.company);
