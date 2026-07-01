@@ -1830,6 +1830,44 @@ async function main() {
     await delay(3000);
     await screenshot(page, outDir, '01-landing');
 
+    // Auto-generate tailored resume if none provided
+    if (!opts.resume) {
+      console.log('\n  No resume — extracting JD and generating tailored resume...');
+      const jobInfo = await page.evaluate(() => {
+        const title = (document.querySelector('.job-details-jobs-unified-top-card__job-title, .topcard__title, h1') || {}).innerText?.trim() || 'Unknown Role';
+        const company = (document.querySelector('.job-details-jobs-unified-top-card__company-name a, .topcard__org-name-link, [class*="company-name"]') || {}).innerText?.trim() || 'Unknown Company';
+        const jd = (document.querySelector('.jobs-description__content, .jobs-description-content, .jobs-box__html-content, .description__text, main') || document.body).innerText?.slice(0, 8000) || '';
+        return { title, company, jd };
+      });
+      console.log('  Job: ' + jobInfo.title + ' at ' + jobInfo.company);
+      const jdPath = path.join(outDir, 'jd.txt');
+      fs.writeFileSync(jdPath, jobInfo.jd);
+      const { spawnSync } = require('child_process');
+      console.log('  Generating resume (~60s)...\n');
+      const tailorResult = spawnSync('node', [
+        path.join(ROOT, 'tailor.js'), '--jd', jdPath,
+        '--company', jobInfo.company, '--title', jobInfo.title
+      ], { cwd: ROOT, stdio: 'inherit', timeout: 300000 });
+      if (tailorResult.status !== 0) {
+        console.error('\n  Resume generation failed. Fix tailor.js then re-run with --resume path/to/resume.pdf');
+        process.exit(1);
+      }
+      // Find the newest output dir with a resume.pdf
+      const outputRoot = path.join(ROOT, 'output');
+      const subdirs = fs.readdirSync(outputRoot)
+        .map(d => path.join(outputRoot, d))
+        .filter(d => { try { return fs.statSync(d).isDirectory(); } catch { return false; } })
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      for (const dir of subdirs) {
+        const pdf = path.join(dir, 'resume.pdf');
+        if (fs.existsSync(pdf)) { opts.resume = pdf; console.log('\n  Resume: ' + pdf); break; }
+      }
+      if (!opts.resume) {
+        console.error('  No resume.pdf found after generation. Aborting.');
+        process.exit(1);
+      }
+    }
+
     // Platform-specific handlers that don't need the generic flow
     if (platform === 'greenhouse') {
       result = await applyGreenhouse(page, opts, outDir);
