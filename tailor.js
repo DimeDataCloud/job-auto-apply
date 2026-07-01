@@ -120,10 +120,34 @@ Rules:
 - Output ONLY the JSON`;
 }
 
+// Escape raw newlines/CR/tabs that sit INSIDE JSON string literals — invalid JSON otherwise.
+// Local models emit them because we ask for newline-separated bullets. Walk char-by-char,
+// track whether we're inside a quoted string, escape control chars found there.
+function escapeControlCharsInStrings(s) {
+  let out = '';
+  let inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (esc) { out += ch; esc = false; continue; }
+    if (ch === '\\') { out += ch; esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; out += ch; continue; }
+    if (inStr) {
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') { out += '\\r'; continue; }
+      if (ch === '\t') { out += '\\t'; continue; }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 // ── Parse Ollama response with repair ──
 function parseJSON(raw) {
   // Strip markdown wrappers
   let s = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  try { return JSON.parse(s); } catch (e) {}
+  // ponytail: escape raw newlines inside strings (the #1 local-model JSON failure)
+  s = escapeControlCharsInStrings(s);
   try { return JSON.parse(s); } catch (e) {}
   // Repair: close unclosed brackets/braces, remove trailing commas
   let openB = (s.match(/{/g) || []).length;
@@ -134,6 +158,15 @@ function parseJSON(raw) {
   for (let i = 0; i < openB - closeB; i++) s += '}';
   s = s.replace(/,\s*([\]}])/g, '$1');
   try { return JSON.parse(s); } catch (e2) { return null; }
+}
+
+// ponytail: runnable check for the parser — the raw-newline case that broke gemma4 (pitfall).
+if (require.main === module && process.argv[2] === '--selftest') {
+  const bad = '{"title":"X","bullets":["line one\nline two","b2"],"skills":["a"]}';
+  const r = parseJSON(bad);
+  if (!r || !Array.isArray(r.bullets) || !r.bullets[0].includes('\n')) throw new Error('parseJSON selftest FAILED');
+  console.log('parseJSON selftest OK:', JSON.stringify(r.bullets));
+  process.exit(0);
 }
 
 // ── HTML template (clean professional resume style) ──
