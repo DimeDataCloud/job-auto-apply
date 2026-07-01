@@ -1668,6 +1668,23 @@ async function navigateWizard(page, outDir, opts) {
             console.log('  Clicked: "' + text + '"');
             clicked = true;
             await delay(3000);
+            // Final submit? Poll for the confirmation and finish. Clicking the real
+            // "Submit application" button IS the submission — never fall through to a manual pause.
+            if (/submit application|send application|^submit$|^apply$/i.test(text.trim())) {
+              for (let i = 0; i < 5; i++) {
+                const t = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '').catch(() => '');
+                if (t.includes('application was sent') || t.includes('your application has been') ||
+                    t.includes('application sent') || t.includes('applied now') || t.includes('was sent to')) {
+                  console.log('  Application submitted successfully!');
+                  await screenshot(page, outDir, 'final-submitted');
+                  return { status: 'submitted' };
+                }
+                await delay(1500);
+              }
+              console.log('  Submit clicked — treating as submitted (confirmation banner not matched).');
+              await screenshot(page, outDir, 'final-submitted');
+              return { status: 'submitted' };
+            }
             break;
           }
         }
@@ -1700,6 +1717,12 @@ async function navigateWizard(page, outDir, opts) {
       }
 
       await screenshot(page, outDir, 'step-' + step + '-stuck');
+      // ponytail: only pause for a human when there's an interactive terminal. Background/batch
+      // runs have no TTY — a stdin wait would hang the whole queue forever. Skip cleanly instead.
+      if (!process.stdin.isTTY) {
+        console.log('  No next/success and non-interactive run — skipping job.');
+        return { status: 'needs_manual', platform: 'linkedin' };
+      }
       console.log('  Could not find next button or success message. Pausing for manual help.');
       console.log('  Please check the browser and press Enter if you fix it, or type "skip" to abort.');
       await page.bringToFront().catch(() => {});
