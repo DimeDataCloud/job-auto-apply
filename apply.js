@@ -29,7 +29,8 @@ const PROFILE = JSON.parse(fs.readFileSync(path.join(ROOT, 'applicant-profile.js
 // Master resume — used as grounding context when the LLM answers screening questions.
 const RESUME_NAME = PROFILE.activeResume || 'example';
 const MASTER = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8')); } catch { return {}; } })();
-const OLLAMA_MODEL = 'gemma4:latest'; // keep in sync with tailor.js
+const OLLAMA_MODEL = 'gemma4:latest'; // heavy reasoning model — resume tailoring (tailor.js)
+const OLLAMA_FAST = 'qwen2.5:1.5b';   // fast instruct model — short screening answers (~0.6s vs ~60s)
 const _answerCache = new Map();       // question → answer, avoids re-asking on page re-renders
 
 function parseArgs() {
@@ -1440,11 +1441,11 @@ async function answerUnfilledRadios(page) {
 // ponytail: only fills confident numeric/short cases (maxlength<=20, number type, or rating/experience
 // wording). Leaves genuine long-form essays blank → stuck-detection then pauses for manual.
 // Minimal Ollama call for short answers (apply.js has no LLM client of its own).
-// ponytail: num_predict must be generous — gemma4 is a reasoning model that spends ~200
-// tokens thinking before it emits the answer; a small cap returns an empty response.
+// Uses the FAST model — qwen2.5:1.5b answers in ~0.6s. num_predict stays roomy so a heavier
+// reasoning model still works if OLLAMA_FAST is swapped (fast models stop early anyway).
 function callOllamaShort(prompt) {
   const http = require('http');
-  const body = JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false, options: { temperature: 0.2, num_predict: 800 } });
+  const body = JSON.stringify({ model: OLLAMA_FAST, prompt, stream: false, options: { temperature: 0.2, num_predict: 400 } });
   return new Promise((resolve, reject) => {
     const req = http.request('http://localhost:11434/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout: 60000,
@@ -1482,11 +1483,20 @@ async function answerScreeningQuestion(question, opts = {}) {
   if (_answerCache.has(key)) return _answerCache.get(key);
 
   const qlc = question.toLowerCase();
+  // Deterministic honesty guard: an explicit "enter 0 if you have never…" instruction → 0.
+  // Don't trust a fast model to imply no experience correctly on this exact pattern.
+  if (!choices && /enter 0 if|0 if you (have )?never|if you have never/.test(qlc)) {
+    _answerCache.set(key, '0');
+    return '0';
+  }
+  // Tell the model the box's character limit up front so it writes within budget (clean answer)
+  // rather than us hard-chopping a long reply mid-word afterward.
+  const cap = maxlen && maxlen > 0 ? ` Hard limit: ${maxlen} characters — do not exceed it.` : '';
   let format;
   if (choices && choices.length) format = 'Reply with EXACTLY one of these options copied verbatim: ' + choices.map(c => `"${c}"`).join(', ') + '.';
-  else if (type === 'number' || /\b0\s*=|scale|0-10|0 to 10|rate your|how would you rate|how familiar/.test(qlc)) format = 'Reply with a single integer. Use the scale in the question (default 0-10). If it asks about experience not in the background, reply 0.';
-  else if (maxlen && maxlen <= 20) format = `Reply with a number or 1-3 words (max ${maxlen} characters).`;
-  else format = 'Reply in one short sentence.';
+  else if (type === 'number' || /\b0\s*=|scale|0-10|0 to 10|rate your|how would you rate|how familiar/.test(qlc)) format = 'Reply with a single integer only. Use the scale in the question (default 0-10). If it asks about experience not in the background, reply 0.';
+  else if (maxlen && maxlen <= 20) format = 'Reply with a number or 1-3 words.' + cap;
+  else format = 'Reply in one or two short sentences.' + cap;
 
   const prompt = `Answer this job application question truthfully AS THE APPLICANT, using ONLY the background below. Never claim experience that is not listed.
 
@@ -1508,7 +1518,12 @@ Output ONLY the answer text — no label, no quotes, no explanation.`;
       ans = choices.find(c => c.toLowerCase() === lc) ||
             choices.find(c => lc.includes(c.toLowerCase()) || c.toLowerCase().includes(lc)) || '';
     }
-    if (maxlen && ans.length > maxlen) ans = ans.slice(0, maxlen);
+    if (maxlen && ans.length > maxlen) {
+      ans = ans.slice(0, maxlen);
+      const sp = ans.lastIndexOf(' ');
+      if (sp > maxlen * 0.6) ans = ans.slice(0, sp); // back off to word boundary, avoid mid-word cut
+      ans = ans.trim();
+    }
   } catch (e) { ans = ''; }
   _answerCache.set(key, ans);
   return ans;
@@ -1533,13 +1548,23 @@ async function fillTextScreeningQuestions(page) {
         const byId = el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
         const near = el.closest('[data-test-form-element], .fb-dash-form-element, .artdeco-text-input--container') || el.parentElement;
         const lbl = byId || (near && near.querySelector('label'));
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        const ph = (el.getAttribute('placeholder') || '').toLowerCase();
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        // Only operate inside the Easy Apply form/modal — NEVER the global nav search box
+        // (filling that React input steals focus and corrupts the last question — see pitfall).
+        const inEA = !!el.closest('.jobs-easy-apply-modal, .artdeco-modal, [role="dialog"], form');
+        const isSearch = role === 'combobox' || role === 'searchbox' ||
+          /search|looking for/.test(ph + ' ' + aria) ||
+          !!el.closest('#global-nav, .search-global-typeahead, header, nav');
         return {
-          q: ((lbl ? lbl.textContent : '') || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim(),
+          q: ((lbl ? lbl.textContent : '') || aria || ph || '').replace(/\s+/g, ' ').trim(),
           maxlen: parseInt(el.getAttribute('maxlength') || '0', 10),
           isNum: (el.getAttribute('type') || '') === 'number',
+          skip: isSearch || !inEA,
         };
       }, inp);
-      if (!meta.q) continue; // no question context → skip stray inputs
+      if (meta.skip || !meta.q) continue; // skip nav search / stray inputs outside the EA form
 
       // LLM-first
       let value = await answerScreeningQuestion(meta.q, { type: meta.isNum ? 'number' : 'text', maxlen: meta.maxlen });
