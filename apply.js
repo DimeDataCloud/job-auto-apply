@@ -1428,13 +1428,82 @@ async function answerUnfilledRadios(page) {
   return answered;
 }
 
+// ── FREE-TEXT SCREENING QUESTIONS ──
+// LinkedIn EA asks open-text questions (numeric ratings, years/months, "how familiar"...) that
+// aren't radios or dropdowns. fillAllFields skips them (no matching label). Fill empty short-answer
+// inputs with a best-effort value so the required-field gate doesn't block submit.
+// ponytail: only fills confident numeric/short cases (maxlength<=20, number type, or rating/experience
+// wording). Leaves genuine long-form essays blank → stuck-detection then pauses for manual.
+async function fillTextScreeningQuestions(page) {
+  const scope = '.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal, form';
+  const inputs = await page.$$(scope + ' input[type="text"], ' + scope + ' input[type="number"], ' + scope + ' input:not([type]), ' + scope + ' textarea').catch(() => []);
+  let filled = 0;
+  for (const inp of inputs) {
+    try {
+      if (!(await inp.isVisible().catch(() => false))) continue;
+      if (await inp.isDisabled().catch(() => false)) continue;
+      const cur = await inp.inputValue().catch(() => '');
+      if (cur && cur.trim()) continue;
+
+      const meta = await page.evaluate(el => {
+        const byId = el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
+        const near = el.closest('[data-test-form-element], .fb-dash-form-element, .artdeco-text-input--container, div') || el.parentElement;
+        const lbl = byId || (near && near.querySelector('label'));
+        return {
+          q: ((el.getAttribute('aria-label') || '') + ' ' + (lbl ? lbl.textContent : '')).toLowerCase().replace(/\s+/g, ' ').trim(),
+          maxlen: parseInt(el.getAttribute('maxlength') || '0', 10),
+          isNum: el.getAttribute('type') === 'number',
+        };
+      }, inp);
+
+      const q = meta.q;
+      let value = '';
+      // Honesty first: explicit "enter 0 if you have never..." → 0 (don't imply experience we lack)
+      if (/enter 0 if|0 if you (have )?never|if you have never/.test(q)) value = '0';
+      else if (meta.isNum || /\b0\s*=|scale|rate|how would you rate|how familiar|leading industry expert|0-10|0 to 10/.test(q)) value = '8';
+      else if (/how many (years|months)|years of|months of|average|sales cycle|how long|experience.*(years|months)/.test(q)) value = '3';
+      else if (/salary|compensation|desired pay|expected pay|rate expectation/.test(q)) value = String(PROFILE.jobPreferences?.salaryExpectation || '').replace(/[^0-9]/g, '') || '80000';
+      else if (meta.maxlen > 0 && meta.maxlen <= 20) value = '3'; // short numeric-style answer
+      // else: leave blank (long-form) — stuck-detection handles it
+
+      if (value) {
+        await inp.click({ clickCount: 3 }).catch(() => {});
+        await inp.fill(String(value)).catch(() => {});
+        filled++;
+        await delay(200);
+      }
+    } catch (e) {}
+  }
+  if (filled > 0) console.log('    Filled ' + filled + ' text screening question(s)');
+  return filled;
+}
+
 // ── WIZARD NAVIGATION ──
 async function navigateWizard(page, outDir, opts) {
   const maxSteps = 25;
+  let prevSig = '';   // page fingerprint — detect when a click doesn't advance
+  let stuck = 0;
   let step = 0;
 
   while (step < maxSteps) {
     console.log('\n  --- Wizard step ' + (step + 1) + ' ---');
+
+    // Stuck detection: if the modal hasn't changed since last step, the click isn't advancing —
+    // almost always an unfillable required question. Bail cleanly instead of spinning to maxSteps.
+    const sig = await page.evaluate(() => {
+      const m = document.querySelector('.jobs-easy-apply-modal, .artdeco-modal, [role="dialog"]') || document.body;
+      return (m.innerText || '').replace(/\s+/g, ' ').slice(0, 400);
+    }).catch(() => '');
+    if (sig && sig === prevSig) {
+      if (++stuck >= 2) {
+        console.log('  Stuck — page unchanged after clicks (unfillable required question). Skipping job.');
+        await screenshot(page, outDir, 'step-' + step + '-stuck');
+        return { status: 'stuck_required_questions', platform: 'linkedin' };
+      }
+    } else {
+      stuck = 0;
+    }
+    prevSig = sig;
 
     // Check for CAPTCHA
     const captcha = await checkCaptcha(page);
@@ -1455,6 +1524,9 @@ async function navigateWizard(page, outDir, opts) {
 
     // Fill any unanswered radio groups (LinkedIn EA additional questions use artdeco divs, not fieldset)
     await answerUnfilledRadios(page);
+
+    // Fill free-text screening questions (numeric ratings, years/months experience, etc.)
+    await fillTextScreeningQuestions(page);
 
     // Upload resume if there's a file input
     await uploadResume(page, opts.resume);
