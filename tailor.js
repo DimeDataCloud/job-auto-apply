@@ -22,7 +22,7 @@ const PROFILE_DATA = fs.existsSync(PROFILE_PATH) ? JSON.parse(fs.readFileSync(PR
 const RESUME_NAME = PROFILE_DATA.activeResume || 'example';
 const MASTER = JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8'));
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const MODEL = 'glm-5.2:cloud';
+const MODEL = 'gemma3:latest';
 
 // ── CLI ──
 function parseArgs() {
