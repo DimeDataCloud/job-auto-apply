@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "setup": "node setup.js",
+    "master": "node build-master.js",
     "login:linkedin": "node login.js --board linkedin",
     "login:indeed": "node login.js --board indeed",
     "tailor": "node tailor.js",

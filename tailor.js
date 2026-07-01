@@ -271,6 +271,23 @@ ${extra}
 }
 
 // ── Main ──
+// When the master holds many jobs (it's a pool), keep only the most relevant to THIS job
+// description — a resume should show ~4, not everything. Preserves original (reverse-chron) order.
+function selectRelevantMaster(master, jdText, cap = 4) {
+  const jobs = master.workHistory || [];
+  if (jobs.length <= cap) return master;
+  const jd = (jdText || '').toLowerCase();
+  const scored = jobs.map((w, idx) => {
+    const text = (w.title + ' ' + w.company + ' ' + (w.bullets || '')).toLowerCase();
+    const words = [...new Set(text.replace(/[^a-z0-9+#. ]/g, ' ').split(/\s+/).filter(t => t.length > 3))];
+    return { idx, score: words.filter(t => jd.includes(t)).length };
+  });
+  const keep = new Set(scored.sort((a, b) => b.score - a.score).slice(0, cap).map(s => s.idx));
+  const workHistory = jobs.filter((_, i) => keep.has(i)); // filter preserves original order
+  console.log(`Selected ${workHistory.length}/${jobs.length} most relevant jobs from master pool`);
+  return { ...master, workHistory };
+}
+
 async function main() {
   const opts = parseArgs();
 
@@ -290,7 +307,10 @@ async function main() {
   console.log('Job: ' + jobTitle + ' at ' + companyName);
   console.log('JD length: ' + jdText.length + ' chars');
 
-  const prompt = buildPrompt(MASTER, jobTitle, companyName, jdText);
+  // Pull the relevant slice from the master pool for this specific job
+  const activeMaster = selectRelevantMaster(MASTER, jdText, 4);
+
+  const prompt = buildPrompt(activeMaster, jobTitle, companyName, jdText);
   console.log('Calling Ollama (' + MODEL + ')...');
   const result = await callOllama(prompt);
 
@@ -302,13 +322,13 @@ async function main() {
   }
   console.log('Tailored content received');
 
-  // Merge AI output with master structure
+  // Merge AI output with the selected master structure
   const merged = {
-    title: tailored.title || MASTER.title,
-    summary: tailored.summary || MASTER.summary,
+    title: tailored.title || activeMaster.title,
+    summary: tailored.summary || activeMaster.summary,
     bullets: tailored.bullets || [],
-    skills: tailored.skills || MASTER.skills,
-    workHistory: MASTER.workHistory.map((w, i) => ({
+    skills: tailored.skills || activeMaster.skills,
+    workHistory: activeMaster.workHistory.map((w, i) => ({
       ...w,
       bullets: tailored.bullets && tailored.bullets[i] ? tailored.bullets[i] : w.bullets,
     })),
@@ -325,8 +345,8 @@ async function main() {
     tailored: merged, jobInfo: { title: jobTitle, company: companyName, jdText: jdText.slice(0, 5000) }
   }, null, 2));
 
-  // Render HTML
-  const html = renderHTML(merged, MASTER);
+  // Render HTML (activeMaster = the selected slice, so structure matches tailored bullets)
+  const html = renderHTML(merged, activeMaster);
   const htmlPath = path.join(outDir, 'resume.html');
   fs.writeFileSync(htmlPath, html);
 
