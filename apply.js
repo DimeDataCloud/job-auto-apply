@@ -1373,6 +1373,58 @@ async function uploadResume(page, resumePath) {
   return false;
 }
 
+// ── DIRECT RADIO FILLER ──
+// Bypasses container selectors (fieldset/role="group") — LinkedIn EA uses bare artdeco divs.
+// Groups all input[type="radio"] by name, answers each unchecked group with "Yes" or first option.
+async function answerUnfilledRadios(page) {
+  const allRadios = await page.$$('input[type="radio"]');
+  if (!allRadios.length) return 0;
+
+  const byName = {};
+  for (const r of allRadios) {
+    const name = await r.getAttribute('name');
+    if (!name) continue;
+    (byName[name] = byName[name] || []).push(r);
+  }
+
+  let answered = 0;
+  for (const [, radios] of Object.entries(byName)) {
+    const states = await Promise.all(radios.map(r => r.isChecked().catch(() => false)));
+    if (states.some(Boolean)) continue;
+
+    // Prefer the "Yes" option; fall back to first
+    let target = null;
+    for (const r of radios) {
+      const val = (await r.getAttribute('value') || '').toLowerCase();
+      if (val === 'yes' || val === 'true' || val.includes('yes')) { target = r; break; }
+    }
+    if (!target) {
+      for (const r of radios) {
+        const labelText = await page.evaluate(el => {
+          const lbl = el.labels?.[0] || el.nextElementSibling || el.parentElement?.querySelector('label');
+          return (lbl?.textContent || '').trim().toLowerCase();
+        }, r);
+        if (labelText === 'yes') { target = r; break; }
+      }
+    }
+    if (!target) target = radios[0];
+
+    if (target) {
+      // Click the label if clicking the input fails (LinkedIn artdeco pattern)
+      await target.click({ force: true }).catch(async () => {
+        await page.evaluate(el => {
+          const lbl = el.labels?.[0] || el.nextElementSibling;
+          (lbl || el).click();
+        }, target).catch(() => {});
+      });
+      answered++;
+      await delay(300);
+    }
+  }
+  if (answered > 0) console.log('    Answered ' + answered + ' unanswered radio group(s) → Yes');
+  return answered;
+}
+
 // ── WIZARD NAVIGATION ──
 async function navigateWizard(page, outDir, opts) {
   const maxSteps = 25;
@@ -1397,6 +1449,9 @@ async function navigateWizard(page, outDir, opts) {
     // Fill all fields on this page
     const filled = await fillAllFields(page, opts);
     console.log('  Filled ' + filled + ' fields');
+
+    // Fill any unanswered radio groups (LinkedIn EA additional questions use artdeco divs, not fieldset)
+    await answerUnfilledRadios(page);
 
     // Upload resume if there's a file input
     await uploadResume(page, opts.resume);
