@@ -106,10 +106,15 @@ async function searchLinkedIn(context, keywords, location, maxResults) {
   // Extract job listings
   const listings = await page.$$eval('.jobs-search__results-list li, .job-card-container, [data-job-id]', els => {
     return els.map(el => {
-      const titleEl = el.querySelector('.job-search-card__title, .job-card-list__title, h3 a, h3');
-      const companyEl = el.querySelector('.job-search-card__company-name, .job-card-container__company-name, h4 a, h4');
-      const locationEl = el.querySelector('.job-search-card__location, .job-card-container__metadata-item, .job-card-container__link');
-      const linkEl = el.querySelector('a[href*="/jobs/view/"]');
+      // ponytail: LinkedIn migrated from h3/.job-search-card__* to artdeco-entity-lockup classes
+      const titleEl = el.querySelector('.artdeco-entity-lockup__title strong, .artdeco-entity-lockup__title a, a.job-card-container__link strong, h3 a, h3');
+      const companyEl = el.querySelector('.artdeco-entity-lockup__subtitle span:not(.visually-hidden), .job-card-container__company-name, h4 a, h4');
+      const locationEl = el.querySelector('.artdeco-entity-lockup__caption, .job-card-container__metadata-item, ul.job-card-container__metadata-wrapper li:first-child span');
+      const linkEl = el.querySelector('a.job-card-container__link, a[href*="/jobs/view/"]');
+      // ponytail: data-job-id is always present; href is lazily set by JS and often empty
+      // Also strip tracking params (they expire — pitfall 21)
+      const jobId = el.getAttribute('data-job-id') || (el.querySelector('[data-job-id]') || {}).getAttribute?.('data-job-id') ||
+        (linkEl && linkEl.href ? linkEl.href.match(/\/jobs\/view\/(\d+)/)?.[1] : null);
 
       // Check for Easy Apply indicator
       const easyApplyEl = el.querySelector('.job-search-card__easy-apply, [class*="easy-apply"]');
@@ -118,7 +123,7 @@ async function searchLinkedIn(context, keywords, location, maxResults) {
         title: titleEl ? titleEl.textContent.trim() : '',
         company: companyEl ? companyEl.textContent.trim() : '',
         location: locationEl ? locationEl.textContent.trim() : '',
-        url: linkEl ? linkEl.href : '',
+        url: jobId ? 'https://www.linkedin.com/jobs/view/' + jobId + '/' : '',
         easyApply: !!easyApplyEl
       };
     }).filter(j => j.title && j.url);

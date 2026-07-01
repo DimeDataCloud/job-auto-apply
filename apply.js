@@ -1487,19 +1487,24 @@ async function applyLinkedIn(page, opts, outDir) {
   console.log('\n[LinkedIn]');
   const id = PROFILE.identity || {};
 
-  // Check if logged in
-  const loginCheck = await page.$('input[name="session_key"], .sign-in-form, .authwall');
+  // ponytail: input[name="session_key"] exists as hidden element even when logged in — require visible
+  const loginCheck = await page.$('input[name="session_key"]:visible, .sign-in-form, .authwall');
   if (loginCheck) {
     console.log('  NOT LOGGED IN. Run: node login.js --board linkedin');
     return { status: 'not_logged_in' };
   }
+
+  // Wait for the Easy Apply button to render (it's lazy-loaded by LinkedIn's SPA)
+  await page.waitForSelector(
+    'button[aria-label*="apply" i], button[aria-label*="আবেদন"], button[aria-label*="bewerben"], button[aria-label*="postular"]',
+    { timeout: 8000 }
+  ).catch(() => {});
 
   // Find Easy Apply button — use CSS class selectors (language-neutral) + English text
   const easyApplySelectors = [
     'button.jobs-apply-button','button[class*="jobs-apply"]','.jobs-s-apply button',
     'button.jobs-apply-button--top-card',
     'button:has-text("Easy Apply")','button[aria-label*="Easy Apply"]',
-    // Language-neutral: the Easy Apply button has a specific class pattern
     'button[class*="apply"][class*="button"]',
   ];
 
@@ -1519,37 +1524,25 @@ async function applyLinkedIn(page, opts, outDir) {
     } catch (e) {}
   }
 
-  // Fallback: find the button by its class hash and aria-label pattern
-  // Works across languages: Bengali "সহজে আবেদন", English "Easy Apply", etc.
+  // Fallback: scan all buttons by aria-label content (any language)
   if (!eaClicked) {
     try {
-      const btns = await page.$$('button:visible');
+      const btns = await page.$$('button');
       for (const btn of btns) {
-        const cls = await btn.getAttribute('class') || '';
         const aria = await btn.getAttribute('aria-label') || '';
-        const text = (await btn.textContent()).trim();
-        
-        // Easy Apply button has class _82eace64 + _03f37ef1 and aria-label containing "apply" word
-        // In English: aria="Easy Apply to this job"
-        // In Bengali: aria="এই জবে সহজ আবেদন"
-        // Key: the aria-label contains a word meaning "apply" — check for common patterns
         const ariaLower = aria.toLowerCase();
-        const isApply = ariaLower.includes('apply') || ariaLower.includes('easy apply') ||
-          ariaLower.includes('আবেদন') || // Bengali
-          ariaLower.includes('bewerben') || // German
-          ariaLower.includes('postular') || // Spanish
-          ariaLower.includes('candidater') || // French
-          ariaLower.includes('応募') || // Japanese
-          ariaLower.includes('지원') || // Korean
-          ariaLower.includes('申请'); // Chinese
-        
-        if (isApply && cls.includes('_82eace64')) {
-          await btn.click();
-          console.log('  Clicked Easy Apply (aria-based fallback): aria="' + aria.slice(0, 30) + '"');
-          eaClicked = true;
-          await delay(3000);
-          break;
-        }
+        const isApply = ariaLower.includes('apply') ||
+          ariaLower.includes('আবেদন') || ariaLower.includes('bewerben') ||
+          ariaLower.includes('postular') || ariaLower.includes('candidater') ||
+          ariaLower.includes('応募') || ariaLower.includes('지원') || ariaLower.includes('申请');
+        if (!isApply) continue;
+        const visible = await btn.isVisible().catch(() => false);
+        if (!visible) continue;
+        await btn.click();
+        console.log('  Clicked Easy Apply (aria fallback): aria="' + aria.slice(0, 40) + '"');
+        eaClicked = true;
+        await delay(3000);
+        break;
       }
     } catch (e) {}
   }
@@ -1577,190 +1570,128 @@ async function applyLinkedIn(page, opts, outDir) {
     return { status: 'no_easy_apply' };
   }
 
-  // Easy Apply opens in an IFRAME, not a modal dialog
-  // Find the apply iframe
+  // ponytail: LinkedIn EA navigates the current page to /jobs/view/{id}/apply/ — not a modal
+  // Wait for that navigation, then work on the apply page (may have an iframe)
+  await delay(5000);
+
+  const applyUrl = page.url();
+  console.log('  Post-click URL: ' + applyUrl.slice(0, 100));
+
+  if (!applyUrl.includes('/apply/')) {
+    // Didn't navigate — check for a modal (some jobs still use modal in certain A/B tests)
+    const modal = await page.$('.artdeco-modal[role="dialog"], [role="dialog"], .jobs-easy-apply-modal, .artdeco-modal__content').catch(() => null);
+    if (modal) {
+      console.log('  Found Easy Apply modal (fallback)');
+      return await navigateWizard(page, outDir, opts);
+    }
+    console.log('  No /apply/ navigation and no modal found');
+    await page.screenshot({ path: path.join(outDir, 'li-no-apply.png') });
+    return { status: 'no_easy_apply_modal' };
+  }
+
+  console.log('  On apply page. Looking for iframe...');
+  await delay(3000);
+
+  // Find the apply iframe (LinkedIn wraps the EA form in an iframe on the /apply/ page)
   let applyFrame = null;
   for (const frame of page.frames()) {
     const frameUrl = frame.url();
-    if (frameUrl.includes('/apply/') || frameUrl.includes('easy-apply')) {
+    if (frame !== page.mainFrame() && (frameUrl.includes('linkedin.com') || frameUrl.startsWith('https://'))) {
       applyFrame = frame;
-      console.log('  Found Easy Apply iframe: ' + frameUrl.slice(0, 80));
+      console.log('  Found apply iframe: ' + frameUrl.slice(0, 80));
       break;
     }
   }
 
+  // If no iframe, the form is directly on the apply page — use the wizard
   if (!applyFrame) {
-    // Wait a bit more and retry — iframe may take time to load
-    await delay(3000);
-    for (const frame of page.frames()) {
-      const frameUrl = frame.url();
-      if (frameUrl.includes('/apply/') || frameUrl.includes('easy-apply')) {
-        applyFrame = frame;
-        console.log('  Found Easy Apply iframe (retry): ' + frameUrl.slice(0, 80));
-        break;
-      }
-    }
+    console.log('  No iframe — using wizard on apply page directly');
+    return await navigateWizard(page, outDir, opts);
   }
 
-  if (!applyFrame) {
-    // Maybe it IS a modal after all (LinkedIn A/B testing)
-    const modal = await page.$('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal');
-    if (modal) {
-      console.log('  Found Easy Apply modal (not iframe)');
-      return await navigateWizard(page, outDir, opts);
-    }
-    console.log('  No Easy Apply iframe or modal found');
-    await page.screenshot({ path: path.join(outDir, 'li-no-modal.png') });
-    return { status: 'no_easy_apply_modal' };
-  }
-
-  // Fill the Easy Apply iframe form
+  // Fill the Easy Apply form inside the iframe
   console.log('  Filling Easy Apply iframe form...');
 
-  // Fill text inputs in the iframe
-  const frameInputs = await applyFrame.$$('input:visible, textarea:visible, select:visible');
-  console.log('  Found ' + frameInputs.length + ' inputs in iframe');
-  for (const inp of frameInputs) {
-    try {
-      const type = await inp.getAttribute("type") || "text";
-      const label = (await inp.getAttribute("aria-label") || await inp.getAttribute("placeholder") || "").toLowerCase();
-      const cv = await inp.inputValue().catch(() => "");
-      if (cv && cv.trim()) continue;
-
-      let value = "";
-      if (type === "tel" || label.includes("phone")) value = id.phone || "";
-      else if (type === "email" || label.includes("email")) value = id.email || "";
-      else if (label.includes("first")) value = id.firstName || "";
-      else if (label.includes("last")) value = id.lastName || "";
-      else if (label.includes("city")) value = id.city || "Nashville";
-      else if (label.includes("state") || label.includes("province")) value = id.state || "TN";
-      else if (label.includes("zip") || label.includes("postal")) value = id.postalCode || "37221";
-      else if (label.includes("address")) value = id.address1 || id.location || "";
-      else if (label.includes("salary") || label.includes("compensation")) value = PROFILE.jobPreferences?.salaryExpectation || "60000";
-      else if (label.includes("linkedin") || label.includes("url") || label.includes("website")) value = id.linkedinUrl || "";
-
-      if (value) {
-        await inp.click({ clickCount: 3 }).catch(() => {});
-        await inp.fill(value).catch(() => {});
-        console.log('    Filled: ' + label + ' = ' + value.slice(0, 30));
-      }
-    } catch (e) {}
-  }
-
-  // Upload resume if there's a file input
-  if (opts.resume && fs.existsSync(opts.resume)) {
-    const fileInputs = await applyFrame.$$('input[type="file"]');
-    for (const fi of fileInputs) {
-      try { await fi.setInputFiles(opts.resume); console.log('    Uploaded resume'); await delay(2000); break; } catch (e) {}
-    }
-  }
-
-  // Fill dropdowns in the iframe — match by label, not just first option
-  const frameSelects = await applyFrame.$$('select:visible');
-  for (const sel of frameSelects) {
-    try {
-      const selLabel = (await sel.getAttribute('aria-label') || await sel.getAttribute('name') || '').toLowerCase();
-      const options = await sel.$$('option');
-      const optionTexts = await Promise.all(options.map(o => o.textContent().catch(() => '')));
-      
-      // Determine which option to select based on field label
-      let targetOption = '';
-      if (selLabel.includes('country') || selLabel.includes('phone') && selLabel.includes('code')) targetOption = 'United States';
-      else if (selLabel.includes('language')) targetOption = 'English';
-      else if (selLabel.includes('state') || selLabel.includes('province')) targetOption = 'Tennessee';
-      else if (selLabel.includes('gender') || selLabel.includes('sex')) targetOption = 'Male';
-      else if (selLabel.includes('race') || selLabel.includes('ethnic')) targetOption = 'White';
-      else if (selLabel.includes('veteran')) targetOption = 'not a veteran';
-      else if (selLabel.includes('disability')) targetOption = "don't have";
-      
-      let selected = false;
-      if (targetOption) {
-        for (let i = 1; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(targetOption.toLowerCase())) {
-            await sel.selectOption({ index: i }).catch(() => {});
-            console.log('    Selected: ' + optionTexts[i].trim().slice(0, 40) + ' (matched: ' + targetOption + ')');
-            selected = true;
-            break;
-          }
-        }
-      }
-      if (!selected) {
-        // Skip — don't pick wrong option
-        console.log('    Select skipped: ' + selLabel + ' (no match for ' + targetOption + ')');
-      }
-    } catch (e) {}
-  }
-
-  // Click through wizard steps (Next/Review/Submit)
-  for (let step = 0; step < 6; step++) {
+  for (let step = 0; step < 8; step++) {
     console.log('  Easy Apply step ' + (step + 1) + '...');
     await delay(2000);
 
-    // Look for Next/Review/Submit buttons in the iframe
-    // Use type and class-based selectors (language-neutral) plus English text
+    // Fill text inputs in the iframe
+    const frameInputs = await applyFrame.$$('input:visible, textarea:visible').catch(() => []);
+    for (const inp of frameInputs) {
+      try {
+        const type = await inp.getAttribute('type') || 'text';
+        if (type === 'file' || type === 'hidden' || type === 'submit') continue;
+        const label = (await inp.getAttribute('aria-label') || await inp.getAttribute('placeholder') || '').toLowerCase();
+        const cv = await inp.inputValue().catch(() => '');
+        if (cv && cv.trim()) continue;
+
+        let value = '';
+        if (type === 'tel' || label.includes('phone')) value = id.phone || '';
+        else if (type === 'email' || label.includes('email')) value = id.email || '';
+        else if (label.includes('first')) value = id.firstName || '';
+        else if (label.includes('last')) value = id.lastName || '';
+        else if (label.includes('city')) value = id.city || 'Nashville';
+        else if (label.includes('state') || label.includes('province')) value = id.state || 'TN';
+        else if (label.includes('zip') || label.includes('postal')) value = id.postalCode || '37221';
+        else if (label.includes('address')) value = id.address1 || id.location || '';
+        else if (label.includes('salary') || label.includes('compensation')) value = PROFILE.jobPreferences?.salaryExpectation || '60000';
+        else if (label.includes('linkedin') || label.includes('website')) value = id.linkedinUrl || '';
+
+        if (value) {
+          await inp.click({ clickCount: 3 }).catch(() => {});
+          await inp.fill(value).catch(() => {});
+          console.log('    Filled: ' + label + ' = ' + value.slice(0, 30));
+        }
+      } catch (e) {}
+    }
+
+    // Upload resume if file input present
+    if (opts.resume && fs.existsSync(opts.resume)) {
+      const fileInputs = await applyFrame.$$('input[type="file"]').catch(() => []);
+      for (const fi of fileInputs) {
+        try { await fi.setInputFiles(opts.resume); console.log('    Uploaded resume'); await delay(2000); break; } catch (e) {}
+      }
+    }
+
+    // Handle screening questions in iframe
+    await fillScreeningQuestions(applyFrame, applyFrame);
+
+    // Find Next/Review/Submit in the iframe
     const nextSelectors = [
-      'button[type="submit"]', 'footer button', '.jobs-easy-apply-footer button',
-      'button:has-text("Next")', 'button:has-text("Review")',
-      'button:has-text("Submit")', 'button:has-text("Send")',
-      'button:has-text("Continue")', 'button:has-text("Save")',
-      'button.jobs-easy-apply-next-button', 'button[data-test-id*="next"]',
-      'button[data-test-id*="submit"]', 'button[data-test-id*="review"]',
+      'footer button:last-child', 'button[type="submit"]',
+      'button:has-text("Next")', 'button:has-text("Review")', 'button:has-text("Submit")',
+      'button:has-text("Continue")', 'button:has-text("Send")',
     ];
 
     let advanced = false;
     for (const sel of nextSelectors) {
       try {
         const btn = await applyFrame.$(sel);
-        if (btn) {
-          const disabled = await btn.isDisabled().catch(() => false);
-          if (disabled) { console.log('    Button disabled: ' + sel); continue; }
-          const text = (await btn.textContent()).trim();
-          console.log('    Clicking: ' + text);
-          await btn.click();
-          advanced = true;
-          await delay(3000);
-
-          if (text.includes("Submit") || text.includes("Send")) {
-            console.log('  APPLICATION SUBMITTED!');
-            await page.screenshot({ path: path.join(outDir, 'li-easy-apply-submitted.png') });
-            return { status: 'submitted', platform: 'linkedin' };
-          }
-          break;
+        if (!btn) continue;
+        const disabled = await btn.isDisabled().catch(() => false);
+        if (disabled) continue;
+        const text = (await btn.textContent()).trim();
+        console.log('    Clicking: ' + text);
+        await btn.click();
+        advanced = true;
+        await delay(2000);
+        if (text.toLowerCase().includes('submit') || text.toLowerCase().includes('send')) {
+          console.log('  APPLICATION SUBMITTED!');
+          await page.screenshot({ path: path.join(outDir, 'li-easy-apply-submitted.png') });
+          return { status: 'submitted', platform: 'linkedin' };
         }
+        break;
       } catch (e) {}
     }
 
     if (!advanced) {
-      console.log('    No next button found. Checking if done...');
-
-      // Check for success in iframe
-      const frameText = await applyFrame.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '').catch(() => '');
-      if (frameText.includes('submitted') || frameText.includes('thank you') || frameText.includes('application has been')) {
+      const pageText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+      if (pageText.includes('application was sent') || pageText.includes('submitted') || pageText.includes('applied')) {
         console.log('  APPLICATION SUBMITTED!');
         return { status: 'submitted', platform: 'linkedin' };
       }
-
-      // Check for errors
-      const errors = await applyFrame.$$('[class*="error"], [role="alert"]').catch(() => []);
-      if (errors.length > 0) {
-        for (const err of errors.slice(0, 3)) {
-          const errText = await err.textContent().catch(() => '');
-          if (errText.trim()) console.log('    Error: ' + errText.trim().slice(0, 100));
-        }
-      }
-
-      // Maybe need to fill more fields
-      const emptyInputs = await applyFrame.$$('input:visible, textarea:visible');
-      for (const inp of emptyInputs) {
-        try {
-          const cv = await inp.inputValue().catch(() => "");
-          if (!cv || !cv.trim()) {
-            const label = (await inp.getAttribute("aria-label") || await inp.getAttribute("placeholder") || "").toLowerCase();
-            if (label) console.log('    Empty field: ' + label);
-          }
-        } catch(e) {}
-      }
-
+      console.log('    No next button — may be done or stuck');
       break;
     }
   }
