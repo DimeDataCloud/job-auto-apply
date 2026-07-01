@@ -11,5 +11,10 @@
     "apply": "node apply.js",
     "score": "node fit-score.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "imapflow": "^1.4.3",
+    "playwright": "^1.61.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
 }

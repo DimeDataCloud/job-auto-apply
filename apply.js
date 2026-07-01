@@ -1651,204 +1651,12 @@ async function applyLinkedIn(page, opts, outDir) {
     return { status: 'no_easy_apply_modal' };
   }
 
-  // LinkedIn Easy Apply opens the form in an IFRAME, not a modal.
-  // The iframe URL pattern: {jobUrl}/apply/?companyName=...&trackingId=...
-  // All form fields, file uploads, and navigation buttons are INSIDE the iframe.
-  // Also check for reCAPTCHA Enterprise which may block automated submission.
-
-  await delay(5000);
-
-  // Find the apply iframe
-  let applyFrame = null;
-  for (const frame of page.frames()) {
-    const frameUrl = frame.url();
-    if (frameUrl.includes('/apply/') && !frameUrl.includes('doubleclick') && !frameUrl.includes('demdex')) {
-      console.log('  Found apply iframe: ' + frameUrl.slice(0, 100));
-      applyFrame = frame;
-      break;
-    }
-  }
-
-  // Fallback: if no iframe found, check if the form is on the main page
-  if (!applyFrame) {
-    await delay(3000);
-    // Retry iframe search
-    for (const frame of page.frames()) {
-      if (frame.url().includes('/apply/')) { applyFrame = frame; console.log('  Found apply iframe (retry): ' + frame.url().slice(0, 100)); break; }
-    }
-  }
-
-  if (!applyFrame) {
-    // No iframe — check if form is on the main page (some A/B tests use inline forms)
-    const mainForm = await page.$('form[class*="apply"], .jobs-easy-apply-content, [data-test-modal-id]');
-    if (mainForm) {
-      console.log('  No iframe — form is on main page, using wizard');
-      return await navigateWizard(page, outDir, opts);
-    }
-    console.log('  No apply iframe or form found');
-    await page.screenshot({ path: path.join(outDir, 'li-no-apply-form.png') });
-    return { status: 'no_easy_apply_form' };
-  }
-
-  // Wait for iframe content to load
-  await delay(3000);
-
-  // Check for reCAPTCHA in any frame
-  let hasCaptcha = false;
-  for (const frame of page.frames()) {
-    try {
-      const frameUrl = frame.url();
-      if (frameUrl.includes('recaptcha')) {
-        hasCaptcha = true;
-        console.log('  WARNING: reCAPTCHA detected — may block automated submission');
-        break;
-      }
-    } catch (e) {}
-  }
-
-  // Fill the Easy Apply form inside the iframe
-  console.log('  Filling Easy Apply iframe form...');
-
-  let submitted = false;
-  for (let step = 0; step < 10; step++) {
-    console.log('  Easy Apply step ' + (step + 1) + '...');
-    await delay(2000);
-
-    // Screenshot each step
-    await page.screenshot({ path: path.join(outDir, 'li-ea-step-' + step + '.png') }).catch(() => {});
-
-    // Fill text inputs in the iframe
-    const frameInputs = await applyFrame.$$('input:visible, textarea:visible').catch(() => []);
-    for (const inp of frameInputs) {
-      try {
-        const type = await inp.getAttribute('type') || 'text';
-        if (type === 'file' || type === 'hidden' || type === 'submit') continue;
-        const label = (await inp.getAttribute('aria-label') || await inp.getAttribute('placeholder') || '').toLowerCase();
-        const cv = await inp.inputValue().catch(() => '');
-        if (cv && cv.trim()) continue;
-
-        let value = '';
-        if (type === 'tel' || label.includes('phone')) value = id.phone || '';
-        else if (type === 'email' || label.includes('email')) value = id.email || '';
-        else if (label.includes('full name') || label === 'name') value = (id.firstName || '') + ' ' + (id.lastName || '');
-        else if (label.includes('first')) value = id.firstName || '';
-        else if (label.includes('last')) value = id.lastName || '';
-        else if (label.includes('city')) value = id.city || '';
-        else if (label.includes('state') || label.includes('province')) value = id.state || '';
-        else if (label.includes('zip') || label.includes('postal')) value = id.postalCode || '';
-        else if (label.includes('address')) value = id.address1 || id.location || '';
-        else if (label.includes('salary') || label.includes('compensation')) value = PROFILE.jobPreferences?.salaryExpectation || '';
-        else if (label.includes('linkedin') || label.includes('website')) value = id.linkedinUrl || '';
-        else if (label.includes('company') || label.includes('current') || label.includes('employer')) value = 'AT&T';
-
-        if (value) {
-          await inp.click({ clickCount: 3 }).catch(() => {});
-          await inp.fill(value).catch(() => {});
-          console.log('    Filled: ' + label + ' = ' + value.slice(0, 30));
-        }
-      } catch (e) {}
-    }
-
-    // Upload resume — try direct setInputFiles first, then file chooser fallback
-    if (opts.resume && fs.existsSync(opts.resume)) {
-      const fileInputs = await applyFrame.$$('input[type="file"]').catch(() => []);
-      if (fileInputs.length > 0) {
-        for (const fi of fileInputs) {
-          try { await fi.setInputFiles(opts.resume); console.log('    Uploaded resume (direct)'); await delay(2000); break; } catch (e) {}
-        }
-      } else {
-        // Fallback: listen for file chooser dialog on the main page
-        try {
-          const [fileChooser] = await Promise.all([
-            page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null),
-            applyFrame.click('button:has-text("Upload"), [class*="upload"]').catch(() => {})
-          ]);
-          if (fileChooser) { await fileChooser.setFiles(opts.resume); console.log('    Uploaded resume (file chooser)'); await delay(2000); }
-        } catch (e) {}
-      }
-    }
-
-    // Handle screening questions in iframe
-    await fillScreeningQuestions(applyFrame, applyFrame).catch(() => {});
-
-    // Find Next/Review/Submit buttons in the iframe
-    // LinkedIn EA wizard: footer contains buttons, last button is the forward action
-    const footerBtns = await applyFrame.$$('footer button, [class*="footer"] button, button').catch(() => []);
-    let advanced = false;
-
-    // Try footer buttons first (more reliable)
-    for (const btn of footerBtns) {
-      try {
-        const disabled = await btn.isDisabled().catch(() => false);
-        if (disabled) continue;
-        const text = (await btn.textContent()).trim().toLowerCase();
-        if (!text) continue;
-        if (text.includes('next') || text.includes('review') || text.includes('continue')) {
-          await btn.click({ force: true });
-          console.log('    Clicked: ' + text);
-          advanced = true;
-          await delay(3000);
-          break;
-        }
-      } catch (e) {}
-    }
-
-    if (!advanced) {
-      for (const btn of footerBtns) {
-        try {
-          const disabled = await btn.isDisabled().catch(() => false);
-          if (disabled) continue;
-          const text = (await btn.textContent()).trim().toLowerCase();
-          if (text.includes('submit') || text.includes('send') || text.includes('apply') && !text.includes('easy')) {
-            await btn.click({ force: true });
-            console.log('    SUBMIT: clicked "' + text + '"');
-            advanced = true;
-            submitted = true;
-            await delay(5000);
-            break;
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (submitted) {
-      // Only detect success AFTER a Submit button click
-      await delay(3000);
-      const frameText = (await applyFrame.evaluate(() => document.body ? document.body.innerText : '').catch(() => '')).toLowerCase();
-      const pageText = (await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '')).toLowerCase();
-      if (frameText.includes('application was sent') || frameText.includes('your application has been') ||
-          pageText.includes('application was sent') || pageText.includes('your application has been')) {
-        console.log('  APPLICATION SUBMITTED!');
-        await page.screenshot({ path: path.join(outDir, 'li-easy-apply-submitted.png') });
-        return { status: 'submitted', platform: 'linkedin' };
-      }
-      // Even if we don't detect exact success text, if we clicked submit, report it
-      console.log('  Submit clicked — checking final state...');
-      await page.screenshot({ path: path.join(outDir, 'li-easy-apply-submitted.png') });
-      return { status: 'submitted', platform: 'linkedin' };
-    }
-
-    if (!advanced) {
-      // Check if we're on a success page without having clicked submit explicitly
-      const frameText = (await applyFrame.evaluate(() => document.body ? document.body.innerText : '').catch(() => '')).toLowerCase();
-      if (frameText.includes('application was sent') || frameText.includes('your application has been')) {
-        console.log('  APPLICATION SUBMITTED!');
-        await page.screenshot({ path: path.join(outDir, 'li-easy-apply-submitted.png') });
-        return { status: 'submitted', platform: 'linkedin' };
-      }
-      // Check for captcha
-      if (frameText.includes('captcha') || frameText.includes('verify') && frameText.includes('human')) {
-        console.log('  CAPTCHA DETECTED — needs manual solve');
-        await page.screenshot({ path: path.join(outDir, 'li-captcha.png') });
-        return { status: 'captcha_needed', platform: 'linkedin' };
-      }
-      console.log('    No next/submit button — may be stuck');
-      break;
-    }
-  }
-
-  await page.screenshot({ path: path.join(outDir, 'li-easy-apply-result.png') });
-  return { status: 'easy_apply_partial', platform: 'linkedin' };
+  // ponytail: LinkedIn EA renders the form on the /apply/ page itself (the MAIN frame) —
+  // the only child iframes are tracking pixels (demdex/doubleclick). navigateWizard works
+  // the main page and includes answerUnfilledRadios() for the additional-questions step
+  // (background check, VAR, local to TN). This is the path that submitted successfully.
+  console.log('  Form is on /apply/ page — using wizard');
+  return await navigateWizard(page, outDir, opts);
 }
 
 // ── INDEED APPLY ──
@@ -2281,6 +2089,16 @@ async function main() {
   console.log('Status: ' + result.status);
   console.log('Result file: ' + resultPath);
   console.log('Screenshots: ' + outDir);
+
+  // ponytail: re-save cookies so the rotated li_at token stays fresh — OneDrive corrupts the
+  // persistent profile, so session-cookies.json is the real source of truth for "log in once".
+  try {
+    const freshCookies = await browser.cookies();
+    if (freshCookies.some(c => c.name === 'li_at')) {
+      fs.writeFileSync(path.join(profileDir, 'session-cookies.json'), JSON.stringify(freshCookies, null, 2));
+      console.log('Session cookies refreshed (' + freshCookies.length + ' saved)');
+    }
+  } catch (e) {}
 
   await browser.close();
 }

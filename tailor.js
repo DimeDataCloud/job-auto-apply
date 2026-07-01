@@ -1,5 +1,5 @@
 // tailor.js — Tailor your resume for a specific job description.
-// Calls Ollama (glm-5.2:cloud) to rewrite summary + bullets + skills,
+// Calls Ollama (local gemma4) to rewrite summary + bullets + skills,
 // then renders through the master HTML template and produces PDF.
 //
 // Usage:
@@ -22,7 +22,7 @@ const PROFILE_DATA = fs.existsSync(PROFILE_PATH) ? JSON.parse(fs.readFileSync(PR
 const RESUME_NAME = PROFILE_DATA.activeResume || 'example';
 const MASTER = JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8'));
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const MODEL = 'glm-5.2:cloud';
+const MODEL = 'gemma4:latest';
 
 // ── CLI ──
 function parseArgs() {
