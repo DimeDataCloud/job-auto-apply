@@ -1494,6 +1494,17 @@ async function applyLinkedIn(page, opts, outDir) {
     return { status: 'not_logged_in' };
   }
 
+  // Debug: print page URL and all buttons to diagnose detection issues
+  console.log('  Page URL: ' + page.url().slice(0, 100));
+  const debugBtns = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('button')).map(b => ({
+      text: b.innerText.trim().slice(0, 30),
+      aria: (b.getAttribute('aria-label') || '').slice(0, 40),
+      cls: b.className.toString().slice(0, 50),
+    })).filter(b => b.text || b.aria)
+  );
+  console.log('  Buttons on page:', JSON.stringify(debugBtns.slice(0, 8)));
+
   // Find Easy Apply / Apply button — force:true bypasses any overlay without needing to dismiss them
   const easyApplySelectors = [
     'button.jobs-apply-button', 'button[class*="jobs-apply"]', '.jobs-s-apply button',
