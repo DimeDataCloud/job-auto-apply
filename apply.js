@@ -327,31 +327,34 @@ function getDropdownValue(fieldLabel, profile) {
   const id = profile.identity || {};
   const screening = profile.screening || {};
   const eeo = profile.eeo || {};
+  const app = profile.application || {};
+  const wa = profile.workAuthorization || {};
+  const jp = profile.jobPreferences || {};
 
-  if (label.includes('how did you hear') || label.includes('hear about')) return screening.howDidYouHear || 'Indeed';
+  if (label.includes('how did you hear') || label.includes('hear about')) return screening.howDidYouHear || '';
   if (label.includes('state') && !label.includes('united')) return id.state || '';
-  if (label.includes('phone') && label.includes('device')) return id.phoneDeviceType || 'Mobile';
-  if (label.includes('country') && label.includes('phone')) return id.phoneCountryCode || 'United States of America (+1)';
-  if (label.includes('country') && !label.includes('phone')) return id.country || 'United States of America';
+  if (label.includes('phone') && label.includes('device')) return id.phoneDeviceType || '';
+  if (label.includes('country') && label.includes('phone')) return id.phoneCountryCode || '';
+  if (label.includes('country') && !label.includes('phone')) return id.country || '';
   if (label.includes('gender') || label.includes('sex')) return eeo.gender || '';
   if (label.includes('race') || label.includes('ethnic')) return eeo.race || '';
   if (label.includes('veteran')) return eeo.veteran || '';
   if (label.includes('disability')) return eeo.disability || '';
-  if (label.includes('employment') && label.includes('type')) return 'Full-time';
-  if (label.includes('work') && label.includes('mode')) return 'Remote';
-  if (label.includes('source')) return screening.howDidYouHear || 'Indeed';
-  if (label.includes('relationship') || label.includes('referral')) return 'No';
-  if (label.includes('degree') || label.includes('education')) return "Bachelor's Degree";
-  if (label.includes('experience')) return '';
-  if (label.includes('salary') || label.includes('compensation')) return profile.jobPreferences?.salaryExpectation || '';
-  if (label.includes('authorized') || label.includes('eligible')) return 'Yes';
-  if (label.includes('sponsorship') || label.includes('visa')) return 'No';
-  if (label.includes('relocate')) return 'No';
-  if (label.includes('travel')) return 'Yes';
-  if (label.includes('start') || label.includes('availability')) return 'Immediately';
-  if (label.includes('shift')) return 'Day';
-  if (label.includes('timezone')) return 'Central';
-  if (label.includes('language')) return 'English';
+  if (label.includes('employment') && label.includes('type')) return app.employmentType || jp.employmentTypes?.[0] || '';
+  if (label.includes('work') && label.includes('mode')) return app.workMode || jp.workMode?.[0] || '';
+  if (label.includes('source')) return screening.howDidYouHear || '';
+  if (label.includes('relationship') || label.includes('referral')) return screening.previouslyWorked ? 'Yes' : 'No';
+  if (label.includes('degree') || label.includes('education')) return app.degree || '';
+  if (label.includes('experience')) return app.experienceDescription || '';
+  if (label.includes('salary') || label.includes('compensation')) return jp.salaryExpectation || '';
+  if (label.includes('authorized') || label.includes('eligible')) return wa.authorizedToWorkInUS ? 'Yes' : 'No';
+  if (label.includes('sponsorship') || label.includes('visa')) return wa.requiresSponsorship ? 'Yes' : 'No';
+  if (label.includes('relocate')) return wa.willingToRelocate ? 'Yes' : 'No';
+  if (label.includes('travel')) return wa.willingToTravel ? 'Yes' : 'No';
+  if (label.includes('start') || label.includes('availability')) return app.startDate || jp.noticePeriod || '';
+  if (label.includes('shift')) return app.shift || '';
+  if (label.includes('timezone')) return app.timezone || '';
+  if (label.includes('language')) return (app.languages || []).join(', ') || '';
   // Default — return empty so we skip rather than fill wrong
   return '';
 }
@@ -452,25 +455,25 @@ async function applyGreenhouse(page, opts, outDir) {
 
       if (selText.includes('gender') || selText.includes('sex')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(eeo.gender ? eeo.gender.toLowerCase() : 'male')) {
+          if (eeo.gender && optionTexts[i].toLowerCase().includes(eeo.gender.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('  Selected gender'); break;
           }
         }
       } else if (selText.includes('race') || selText.includes('ethnic') || selText.includes('hispanic')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(eeo.race ? eeo.race.toLowerCase() : 'white')) {
+          if (eeo.race && optionTexts[i].toLowerCase().includes(eeo.race.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('  Selected race'); break;
           }
         }
       } else if (selText.includes('veteran')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes('not a veteran') || optionTexts[i].toLowerCase().includes('i am not')) {
+          if (eeo.veteran && optionTexts[i].toLowerCase().includes(eeo.veteran.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('  Selected veteran status'); break;
           }
         }
       } else if (selText.includes('disability')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes("don't have") || optionTexts[i].toLowerCase().includes('no, i')) {
+          if (eeo.disability && optionTexts[i].toLowerCase().includes(eeo.disability.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('  Selected disability status'); break;
           }
         }
@@ -1312,21 +1315,21 @@ async function fillScreeningQuestions(page, container) {
       }
       if (selText.includes('gender') || selText.includes('sex')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(eeo.gender ? eeo.gender.toLowerCase() : 'male')) {
+          if (eeo.gender && optionTexts[i].toLowerCase().includes(eeo.gender.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
           }
         }
       }
       if (selText.includes('race') || selText.includes('ethnic')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(eeo.race ? eeo.race.toLowerCase() : 'white')) {
+          if (eeo.race && optionTexts[i].toLowerCase().includes(eeo.race.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
           }
         }
       }
       if (selText.includes('veteran')) {
         for (let i = 0; i < optionTexts.length; i++) {
-          if (optionTexts[i].toLowerCase().includes(eeo.veteran ? eeo.veteran.toLowerCase() : 'not a veteran')) {
+          if (eeo.veteran && optionTexts[i].toLowerCase().includes(eeo.veteran.toLowerCase())) {
             await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
           }
         }

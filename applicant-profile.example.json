@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this file to applicant-profile.json and fill in YOUR data. This is the data Playwright types into job application forms.",
+  "_comment": "Copy this file to applicant-profile.json and fill in YOUR data. This is the data Playwright types into job application forms. ALL fields must be filled before the pipeline can run.",
   "activeResume": "example",
   "resumes": {
     "example": {
@@ -30,15 +30,17 @@
   "workAuthorization": {
     "authorizedToWorkInUS": true,
     "requiresSponsorship": false,
+    "visaType": "",
     "willingToRelocate": false,
-    "willingToTravel": true
+    "willingToTravel": true,
+    "travelPct": ""
   },
   "eeo": {
-    "_comment": "Optional EEO self-identification. Leave null to skip these questions if the form allows.",
+    "_comment": "EEO self-identification. Used for dropdowns and radio buttons on application forms.",
     "gender": "",
     "race": "",
-    "veteran": "I am not a veteran",
-    "disability": "I don't have a disability"
+    "veteran": "",
+    "disability": ""
   },
   "screening": {
     "backgroundCheck": true,
@@ -47,7 +49,7 @@
     "felonyExplanation": "",
     "terminated": false,
     "terminatedExplanation": "",
-    "howDidYouHear": "Indeed",
+    "howDidYouHear": "",
     "previouslyWorked": false,
     "previousWorkCity": "",
     "smsConsent": true,
@@ -60,7 +62,7 @@
     "industries": [],
     "employmentTypes": ["Full-time"],
     "workMode": ["On-site", "Hybrid", "Remote"],
-    "locations": ["Your City, ST"],
+    "locations": [],
     "compensationType": ["Salary", "Base + Commission", "Commission"],
     "minSalary": 0,
     "minBaseCommission": 0,
@@ -68,6 +70,23 @@
     "experienceYears": 0,
     "salaryExpectation": "",
     "noticePeriod": "Immediately"
+  },
+  "application": {
+    "_comment": "Values for common application form fields and screening dropdowns.",
+    "employmentType": "Full-time",
+    "workMode": "Remote",
+    "degree": "Bachelor's Degree",
+    "experienceDescription": "",
+    "shift": "Day",
+    "timezone": "Central",
+    "languages": ["English"],
+    "startDate": "Immediately",
+    "references": "Available upon request",
+    "emergencyContact": {
+      "name": "",
+      "relationship": "",
+      "phone": ""
+    }
   },
   "accountCredentials": {
     "_comment": "Used for creating accounts on external career sites (Workday, Taleo, etc.). NOT for LinkedIn/Indeed.",
