@@ -1840,8 +1840,11 @@ async function main() {
         const titleEl = document.querySelector('.job-details-jobs-unified-top-card__job-title h1, .job-details-jobs-unified-top-card__job-title, .t-24.t-bold, h1');
         const companyEl = document.querySelector('.job-details-jobs-unified-top-card__company-name a, .job-details-jobs-unified-top-card__primary-description a, .topcard__org-name-link, a[href*="/company/"]');
         const jdEl = document.querySelector('.jobs-description__content, .jobs-description-content, .jobs-box__html-content, #job-details, [class*="description__text"]');
-        const title = (titleEl?.innerText || '').trim() || 'Unknown Role';
-        const company = (companyEl?.innerText || '').trim() || 'Unknown Company';
+        // Parse "Job Title - Company | LinkedIn" from page title as reliable fallback
+        const pageTitle = document.title || '';
+        const pageTitleParts = pageTitle.replace(' | LinkedIn', '').split(' - ');
+        const title = (titleEl?.innerText || '').trim() || pageTitleParts[0]?.trim() || 'Unknown Role';
+        const company = (companyEl?.innerText || '').trim() || pageTitleParts[1]?.trim() || 'Unknown Company';
         const jd = (jdEl || document.body).innerText?.slice(0, 8000) || '';
         return { title, company, jd };
       });
