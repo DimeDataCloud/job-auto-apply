@@ -1494,16 +1494,7 @@ async function applyLinkedIn(page, opts, outDir) {
     return { status: 'not_logged_in' };
   }
 
-  // Dismiss any overlay modals blocking the Apply button (cookie/notification prompts)
-  const dismissBtns = await page.$$('button[aria-label="Dismiss"], button.modal__dismiss').catch(() => []);
-  for (const db of dismissBtns) {
-    try {
-      const vis = await db.isVisible().catch(() => false);
-      if (vis) { await db.click({ force: true }); await delay(500); }
-    } catch (e) {}
-  }
-
-  // Find Easy Apply / Apply button — use force:true since overlays may still partially block
+  // Find Easy Apply / Apply button — force:true bypasses any overlay without needing to dismiss them
   const easyApplySelectors = [
     'button.jobs-apply-button', 'button[class*="jobs-apply"]', '.jobs-s-apply button',
     'button.jobs-apply-button--top-card',
