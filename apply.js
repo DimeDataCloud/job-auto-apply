@@ -97,8 +97,539 @@ function detectPlatform(url, page) {
   if (u.includes('lever.co')) return 'lever';
   if (u.includes('taleo') || u.includes('oraclecloud')) return 'taleo';
   if (u.includes('icims.com')) return 'icims';
-  if (u.includes('careers.labcorp.com') || u.includes('labcorp')) return 'workday'; // LabCorp uses Workday
+  if (u.includes('careers.labcorp.com') || u.includes('labcorp')) return 'workday';
+  if (u.includes('paycor.com')) return 'paycor';
+  if (u.includes('welovealfa.com')) return 'alfasoftware';
   return 'generic';
+}
+
+// ── UNIVERSAL SMART DROPDOWN HANDLER ──
+// Handles both standard <select> and custom combobox dropdowns (Workday, Greenhouse, generic).
+// Tries in order:
+//   1. Standard <select> with selectOption()
+//   2. Custom combobox: click trigger -> wait for popup -> click option by text
+//   3. Workday-specific: data-automation-id based selectors
+async function fillDropdown(page, fieldLabel, optionText, container) {
+  const root = container || page;
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+
+  // Strategy 1: Standard <select> — find by associated label or aria-label
+  const selectSelectors = [
+    `select[aria-label*="${fieldLabel}" i]`,
+    `select[name*="${fieldLabel.toLowerCase().replace(/[^a-z0-9]/g,'')}" i]`,
+  ];
+  // Also try finding select near a label element
+  const labelEls = await root.$$(`label, span, div`).catch(() => []);
+  for (const label of labelEls.slice(0, 50)) {
+    try {
+      const text = (await label.textContent()).trim().replace('*', '').toLowerCase();
+      if (text === fieldLabel.toLowerCase() || text === fieldLabel.toLowerCase().replace('*', '')) {
+        const forId = await label.getAttribute('for');
+        if (forId) {
+          const sel = await root.$(`select#${forId}`);
+          if (sel) {
+            const opts = await sel.$$('option');
+            for (let i = 1; i < opts.length; i++) {
+              const optText = (await opts[i].textContent()).toLowerCase();
+              if (optText.includes(optionText.toLowerCase())) {
+                await sel.selectOption({ index: i });
+                console.log('    Selected: ' + (await opts[i].textContent()).trim().slice(0, 60));
+                return true;
+              }
+            }
+            // If no exact match, pick first non-empty
+            await sel.selectOption({ index: 1 });
+            console.log('    Selected (first option): ' + (await opts[1].textContent()).trim().slice(0, 60));
+            return true;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 2: Custom combobox — click the trigger element showing "Select One" or "0 items selected"
+  // Find the label first, then find the dropdown trigger near it
+  const triggerHandle = await root.evaluateHandle((label) => {
+    // Find the label text element
+    const allEls = document.querySelectorAll('span, div, label, p, [data-automation-id*="label"]');
+    for (const el of allEls) {
+      if (el.children.length > 0) continue;
+      const text = el.textContent.trim().replace('*', '');
+      if (text.toLowerCase() === label.toLowerCase()) {
+        // Found the label — walk up to find the dropdown trigger
+        let parent = el.parentElement;
+        for (let i = 0; i < 6 && parent; i++) {
+          // Workday: look for [data-automation-id] on clickable elements
+          const trigger = parent.querySelector(
+            '[data-automation-id*="select"]:not([data-automation-id*="label"]), ' +
+            '[data-automation-id*="combobox"], [data-automation-id*="dropdown"], ' +
+            '[role="combobox"], [role="listbox"], ' +
+            'div[class*="css-"][tabindex], ' +
+            'input[readonly], ' +
+            '[data-automation-id*="selectedItemList"]'
+          );
+          if (trigger) return trigger;
+          // Also check siblings
+          const next = el.nextElementSibling || (parent && parent.querySelector('[data-automation-id*="select"]'));
+          if (next && next !== el) return next;
+          parent = parent.parentElement;
+        }
+        return null;
+      }
+    }
+    return null;
+  }, fieldLabel);
+
+  const triggerExists = await triggerHandle.evaluate(el => !!el).catch(() => false);
+  if (!triggerExists) {
+    console.log('    No dropdown trigger found for: ' + fieldLabel);
+    return false;
+  }
+
+  // Click the trigger to open the popup
+  try {
+    await triggerHandle.click({ force: true });
+  } catch (e) {
+    console.log('    Trigger click failed: ' + e.message.slice(0, 80));
+    return false;
+  }
+  await delay(1000);
+
+  // Now find and click the option in the popup
+  // Workday popups render options as [data-automation-id*="option"] or [role="option"]
+  const optionSelectors = [
+    '[data-automation-id*="option"]',
+    '[role="option"]',
+    '[role="listitem"]',
+    'li[class*="css-"]',
+    'div[class*="option"]',
+    'li[tabindex]',
+    '[data-automation-id*="selectItem"]',
+  ];
+
+  for (const sel of optionSelectors) {
+    try {
+      const options = await page.$$(sel);
+      if (options.length === 0) continue;
+
+      for (const opt of options) {
+        try {
+          const text = (await opt.textContent()).trim();
+          if (text.toLowerCase().includes(optionText.toLowerCase())) {
+            await opt.click({ force: true });
+            console.log('    Selected: ' + text.slice(0, 60));
+            await delay(500);
+            return true;
+          }
+        } catch (e) {}
+      }
+
+      // No exact match — pick first visible option
+      for (const opt of options) {
+        try {
+          const visible = await opt.isVisible().catch(() => true);
+          if (visible) {
+            const text = (await opt.textContent()).trim();
+            if (text && text.length > 1 && text.length < 200) {
+              await opt.click({ force: true });
+              console.log('    Selected (first): ' + text.slice(0, 60));
+              await delay(500);
+              return true;
+            }
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // Close the popup if nothing matched
+  await page.keyboard.press('Escape').catch(() => {});
+  console.log('    No option found for "' + optionText + '" in dropdown: ' + fieldLabel);
+  return false;
+}
+
+// ── FIND ALL UNFILLED DROPDOWNS ON A PAGE ──
+// Scans for dropdown triggers that show "Select One", "0 items selected", or empty combobox values
+async function findUnfilledDropdowns(page, container) {
+  const root = container || page;
+  return await root.evaluate(() => {
+    const results = [];
+    // Skip patterns — text that is NOT a field label
+    const skipText = ['Select One', 'items selected', 'step ', 'current step', 'Afghanistan', 'Albania', 'Algeria',
+      'Error:', 'error', 'required', 'Save and', 'Continue', 'Next', 'Submit', 'Review',
+      'United States of America (+1)', '1 item selected', '0 items selected',
+      'My Information', 'My Experience', 'Application Questions', 'Voluntary Disclosures',
+      'Self Identify', 'Review', 'Create Account', 'Sign In', 'English',
+      'Careers Home', 'Candidate Home', 'Back to Job Posting'];
+
+    // Look for elements showing "Select One" or "0 items selected"
+    const allEls = document.querySelectorAll('span, div, [data-automation-id]');
+    for (const el of allEls) {
+      if (el.children.length > 0) continue;
+      const text = el.textContent.trim();
+      if (text === 'Select One' || text === '0 items selected' || text === 'items selected') {
+        // Find the field label by walking up — look for a label-like sibling/parent
+        let parent = el.parentElement;
+        let label = '';
+        for (let i = 0; i < 6 && parent; i++) {
+          // Look for elements that look like field labels
+          const candidates = parent.querySelectorAll('span, div, label, p, [data-automation-id*="label"]');
+          for (const l of candidates) {
+            if (l === el) continue;
+            if (l.children.length > 0) continue;
+            const lt = l.textContent.trim().replace('*', '');
+            // Must be 3-60 chars, not a skip pattern, not a country name, not a number
+            if (lt.length >= 3 && lt.length <= 60 &&
+                !skipText.some(s => lt.toLowerCase().includes(s.toLowerCase())) &&
+                !lt.match(/^\d/) && // not starting with a number
+                !lt.includes('+1') && // not a phone code
+                !lt.includes('United States') && // not a country
+                (lt.endsWith('*') || lt.includes('?') || /^[A-Z]/.test(lt))) { // looks like a label
+              label = lt;
+              break;
+            }
+          }
+          if (label) break;
+          parent = parent.parentElement;
+        }
+        if (label) results.push({ label, triggerText: text });
+      }
+    }
+    // Also look for empty standard <select> elements
+    document.querySelectorAll('select').forEach(sel => {
+      if (sel.selectedIndex <= 0) {
+        let label = '';
+        const id = sel.id;
+        if (id) {
+          const labelEl = document.querySelector('label[for="' + id + '"]');
+          if (labelEl) label = labelEl.textContent.trim().replace('*', '');
+        }
+        if (!label) label = sel.getAttribute('aria-label') || sel.getAttribute('name') || '';
+        if (label && !skipText.some(s => label.includes(s))) {
+          results.push({ label, triggerText: 'empty-select', isStandard: true });
+        }
+      }
+    });
+    // Deduplicate by label
+    const seen = new Set();
+    return results.filter(r => {
+      if (seen.has(r.label)) return false;
+      seen.add(r.label);
+      return true;
+    });
+  });
+}
+
+// ── SMART DROPDOWN VALUE MAPPER ──
+// Maps field labels to appropriate values from the applicant profile
+function getDropdownValue(fieldLabel, profile) {
+  const label = fieldLabel.toLowerCase();
+  const id = profile.identity || {};
+  const screening = profile.screening || {};
+  const eeo = profile.eeo || {};
+
+  if (label.includes('how did you hear') || label.includes('hear about')) return screening.howDidYouHear || 'Indeed';
+  if (label.includes('state') && !label.includes('united')) return id.state || 'Tennessee';
+  if (label.includes('phone') && label.includes('device')) return id.phoneDeviceType || 'Mobile';
+  if (label.includes('country') && label.includes('phone')) return id.phoneCountryCode || 'United States of America (+1)';
+  if (label.includes('country') && !label.includes('phone')) return id.country || 'United States of America';
+  if (label.includes('gender') || label.includes('sex')) return eeo.gender || 'Male';
+  if (label.includes('race') || label.includes('ethnic')) return eeo.race || 'White';
+  if (label.includes('veteran')) return eeo.veteran || 'I am not a veteran';
+  if (label.includes('disability')) return eeo.disability || "I don't have a disability";
+  if (label.includes('employment') && label.includes('type')) return 'Full-time';
+  if (label.includes('work') && label.includes('mode')) return 'Remote';
+  if (label.includes('source')) return screening.howDidYouHear || 'Indeed';
+  if (label.includes('relationship') || label.includes('referral')) return 'No';
+  if (label.includes('degree') || label.includes('education')) return "Bachelor's Degree";
+  if (label.includes('experience')) return '3-5 years';
+  if (label.includes('salary') || label.includes('compensation')) return profile.jobPreferences?.salaryExpectation || '60000';
+  if (label.includes('authorized') || label.includes('eligible')) return 'Yes';
+  if (label.includes('sponsorship') || label.includes('visa')) return 'No';
+  if (label.includes('relocate')) return 'No';
+  if (label.includes('travel')) return 'Yes';
+  if (label.includes('start') || label.includes('availability')) return 'Immediately';
+  if (label.includes('shift')) return 'Day';
+  if (label.includes('timezone')) return 'Central';
+  if (label.includes('language')) return 'English';
+  // Default — return empty so we skip rather than fill wrong
+  return '';
+}
+
+// ── GREENHOUSE FORM HANDLER ──
+// Greenhouse job boards have inline forms with standard HTML inputs.
+// Fields: #first_name, #last_name, #email, phone (with country selector),
+// resume file upload, custom questions (salary, EEO), reCAPTCHA.
+async function applyGreenhouse(page, opts, outDir) {
+  console.log('\n[Greenhouse]');
+  const id = PROFILE.identity || {};
+  const screening = PROFILE.screening || {};
+  const eeo = PROFILE.eeo || {};
+
+  // The form may already be visible, or we may need to click "Apply"
+  let applyBtn = await page.$('a:has-text("Apply"), button:has-text("Apply"), #apply_button, button:has-text("Become")');
+  if (applyBtn) {
+    const text = (await applyBtn.textContent()).trim();
+    console.log('  Clicking: ' + text);
+    await applyBtn.click({ force: true });
+    await delay(3000);
+  }
+
+  // Fill first name
+  const firstNameEl = await page.$('#first_name, input[name="first_name"], input[aria-label*="First Name"]');
+  if (firstNameEl) { await firstNameEl.click({ clickCount: 3 }); await firstNameEl.fill(id.firstName || ''); console.log('  Filled first name'); }
+
+  // Fill last name
+  const lastNameEl = await page.$('#last_name, input[name="last_name"], input[aria-label*="Last Name"]');
+  if (lastNameEl) { await lastNameEl.click({ clickCount: 3 }); await lastNameEl.fill(id.lastName || ''); console.log('  Filled last name'); }
+
+  // Fill email
+  const emailEl = await page.$('#email, input[name="email"], input[type="email"], input[aria-label*="Email"]');
+  if (emailEl) { await emailEl.click({ clickCount: 3 }); await emailEl.fill(id.email || (opts.email || '')); console.log('  Filled email'); }
+
+  // Fill phone — Greenhouse uses a custom phone input with country selector
+  const phoneEl = await page.$('input[type="tel"], input[name="phone"], input[aria-label*="phone"]');
+  if (phoneEl) {
+    await phoneEl.click({ clickCount: 3 });
+    await phoneEl.fill(id.phone || '').catch(() => {});
+    console.log('  Filled phone');
+  }
+
+  // Upload resume
+  if (opts.resume && fs.existsSync(opts.resume)) {
+    const fileInputs = await page.$$('input[type="file"]');
+    for (const fi of fileInputs) {
+      try {
+        await fi.setInputFiles(opts.resume);
+        console.log('  Uploaded resume: ' + opts.resume);
+        await delay(2000);
+        break;
+      } catch (e) {}
+    }
+  }
+
+  // Fill custom questions — Greenhouse uses named text inputs and textareas
+  // Salary expectations
+  const salaryEl = await page.$('input[name*="salary"], textarea[name*="salary"], [aria-label*="salary"]');
+  if (salaryEl) {
+    const salary = PROFILE.jobPreferences?.salaryExpectation || '60000';
+    await salaryEl.click({ clickCount: 3 });
+    await salaryEl.fill(salary);
+    console.log('  Filled salary expectation');
+  }
+
+  // Fill any textarea custom questions
+  const textareas = await page.$$('textarea:visible');
+  for (const ta of textareas) {
+    try {
+      const ariaLabel = (await ta.getAttribute('aria-label') || '').toLowerCase();
+      const name = (await ta.getAttribute('name') || '').toLowerCase();
+      const currentVal = await ta.inputValue().catch(() => '');
+      if (currentVal) continue;
+
+      if (ariaLabel.includes('why') || name.includes('why') || ariaLabel.includes('cover') || name.includes('cover')) {
+        const cover = PROFILE.answers?.['Why this company?'] || PROFILE.answers?.['Why this role?'] || '';
+        await ta.fill(cover);
+        console.log('  Filled: ' + ariaLabel.slice(0, 40));
+      } else if (ariaLabel.includes('salary') || name.includes('salary')) {
+        await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '60000');
+        console.log('  Filled salary');
+      } else {
+        // Generic textarea — fill with a short answer
+        await ta.fill('N/A');
+        console.log('  Filled: ' + ariaLabel.slice(0, 40));
+      }
+    } catch (e) {}
+  }
+
+  // Fill select dropdowns (EEO questions)
+  const selects = await page.$$('select:visible');
+  for (const sel of selects) {
+    try {
+      const selText = (await sel.textContent() || '').toLowerCase();
+      const options = await sel.$$('option');
+      const optionTexts = await Promise.all(options.map(o => o.textContent().catch(() => '')));
+
+      if (selText.includes('gender') || selText.includes('sex')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes(eeo.gender ? eeo.gender.toLowerCase() : 'male')) {
+            await sel.selectOption({ index: i }); console.log('  Selected gender'); break;
+          }
+        }
+      } else if (selText.includes('race') || selText.includes('ethnic') || selText.includes('hispanic')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes(eeo.race ? eeo.race.toLowerCase() : 'white')) {
+            await sel.selectOption({ index: i }); console.log('  Selected race'); break;
+          }
+        }
+      } else if (selText.includes('veteran')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes('not a veteran') || optionTexts[i].toLowerCase().includes('i am not')) {
+            await sel.selectOption({ index: i }); console.log('  Selected veteran status'); break;
+          }
+        }
+      } else if (selText.includes('disability')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes("don't have") || optionTexts[i].toLowerCase().includes('no, i')) {
+            await sel.selectOption({ index: i }); console.log('  Selected disability status'); break;
+          }
+        }
+      } else {
+        // Generic select — pick first non-empty option
+        for (let i = 1; i < optionTexts.length; i++) {
+          try { await sel.selectOption({ index: i }); console.log('  Selected: ' + optionTexts[i].trim().slice(0, 40)); break; } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Fill any remaining unfilled dropdowns (custom comboboxes)
+  const ghDrops = await findUnfilledDropdowns(page);
+  if (ghDrops.length > 0) {
+    console.log('  Found ' + ghDrops.length + ' unfilled dropdowns');
+    for (const dd of ghDrops) {
+      const value = getDropdownValue(dd.label, PROFILE);
+      if (value) {
+        console.log('  Dropdown: ' + dd.label + ' -> ' + value);
+        await fillDropdown(page, dd.label, value);
+      }
+    }
+  }
+
+  // Auto-approve all consent checkboxes
+  const checkboxes = await page.$$('[role="checkbox"]:visible, input[type="checkbox"]:visible');
+  for (const cb of checkboxes) {
+    try {
+      const isChecked = await cb.isChecked().catch(() => false);
+      if (isChecked) continue;
+      const l = (await cb.getAttribute('aria-label') || '').toLowerCase();
+      if (l.includes('consent') || l.includes('agree') || l.includes('acknowledge') || l.includes('authorize')) {
+        await cb.click({ force: true });
+        console.log('  Auto-approved: ' + l.slice(0, 60));
+      }
+    } catch (e) {}
+  }
+
+  // Check for CAPTCHA
+  const captcha = await checkCaptcha(page);
+  if (captcha) {
+    console.log('\n  *** CAPTCHA DETECTED on Greenhouse ***');
+    console.log('  Cannot auto-solve. Application needs manual CAPTCHA completion.');
+    await page.screenshot({ path: path.join(outDir, 'greenhouse-captcha.png') });
+    return { status: 'captcha_needed', platform: 'greenhouse' };
+  }
+
+  await page.screenshot({ path: path.join(outDir, 'greenhouse-filled.png') });
+
+  // Click submit button
+  const submitSelectors = [
+    'button:has-text("Submit")', 'button:has-text("Send")', 'button:has-text("Apply")',
+    'button:has-text("Become")', 'button[type="submit"]', '#submit_app',
+    'button:has-text("Submit Application")',
+  ];
+  for (const sel of submitSelectors) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) {
+        const disabled = await btn.isDisabled().catch(() => false);
+        if (!disabled) {
+          const text = (await btn.textContent()).trim();
+          console.log('  Clicking submit: ' + text);
+          await btn.click({ force: true });
+          await delay(5000);
+          
+          // Check if submitted
+          const afterText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+          if (afterText.includes('thank you') || afterText.includes('submitted') || afterText.includes('received') || afterText.includes('application has been')) {
+            console.log('  APPLICATION SUBMITTED!');
+            await page.screenshot({ path: path.join(outDir, 'greenhouse-submitted.png') });
+            return { status: 'submitted', platform: 'greenhouse' };
+          }
+          console.log('  Submit clicked. Checking result...');
+          await page.screenshot({ path: path.join(outDir, 'greenhouse-after-submit.png') });
+          return { status: 'submitted', platform: 'greenhouse' };
+        }
+      }
+    } catch (e) {}
+  }
+
+  console.log('  Could not find submit button');
+  return { status: 'no_submit_button', platform: 'greenhouse' };
+}
+
+// ── LEVER FORM HANDLER ──
+// Lever has a simple form: name, email, resume upload, optional questions.
+async function applyLever(page, opts, outDir) {
+  console.log('\n[Lever]');
+  const id = PROFILE.identity || {};
+
+  // Fill name (Lever uses a single name field or first/last)
+  const nameEl = await page.$('input[name="name"], input[aria-label*="name"]');
+  if (nameEl) {
+    await nameEl.click({ clickCount: 3 });
+    await nameEl.fill(id.firstName + ' ' + id.lastName);
+    console.log('  Filled name');
+  } else {
+    const fnEl = await page.$('input[name*="first"], input[aria-label*="First"]');
+    if (fnEl) { await fnEl.click({ clickCount: 3 }); await fnEl.fill(id.firstName || ''); console.log('  Filled first name'); }
+    const lnEl = await page.$('input[name*="last"], input[aria-label*="Last"]');
+    if (lnEl) { await lnEl.click({ clickCount: 3 }); await lnEl.fill(id.lastName || ''); console.log('  Filled last name'); }
+  }
+
+  // Fill email
+  const emailEl = await page.$('input[type="email"], input[name="email"], input[aria-label*="email"]');
+  if (emailEl) { await emailEl.click({ clickCount: 3 }); await emailEl.fill(id.email || ''); console.log('  Filled email'); }
+
+  // Fill phone
+  const phoneEl = await page.$('input[type="tel"], input[name="phone"], input[aria-label*="phone"]');
+  if (phoneEl) { await phoneEl.click({ clickCount: 3 }); await phoneEl.fill(id.phone || ''); console.log('  Filled phone'); }
+
+  // Upload resume
+  if (opts.resume && fs.existsSync(opts.resume)) {
+    const fileInputs = await page.$$('input[type="file"]');
+    for (const fi of fileInputs) {
+      try { await fi.setInputFiles(opts.resume); console.log('  Uploaded resume'); await delay(2000); break; } catch (e) {}
+    }
+  }
+
+  // Fill any custom questions (textareas, selects)
+  const textareas = await page.$$('textarea:visible');
+  for (const ta of textareas) {
+    try {
+      const v = await ta.inputValue().catch(() => '');
+      if (v) continue;
+      const label = (await ta.getAttribute('aria-label') || await ta.getAttribute('placeholder') || '').toLowerCase();
+      if (label.includes('why')) await ta.fill(PROFILE.answers?.['Why this company?'] || 'N/A');
+      else if (label.includes('salary')) await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '60000');
+      else await ta.fill('N/A');
+      console.log('  Filled: ' + label.slice(0, 40));
+    } catch (e) {}
+  }
+
+  const selects = await page.$$('select:visible');
+  for (const sel of selects) {
+    try { const opts2 = await sel.$$('option'); for (let i = 1; i < opts2.length; i++) { try { await sel.selectOption({ index: i }); break; } catch (e) {} } } catch (e) {}
+  }
+
+  // Check for CAPTCHA
+  const captcha = await checkCaptcha(page);
+  if (captcha) {
+    return { status: 'captcha_needed', platform: 'lever' };
+  }
+
+  // Submit
+  const submitBtn = await page.$('button:has-text("Submit"), button:has-text("Apply"), button[type="submit"]');
+  if (submitBtn) {
+    await submitBtn.click({ force: true });
+    await delay(5000);
+    const afterText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+    if (afterText.includes('thank') || afterText.includes('submitted') || afterText.includes('received')) {
+      console.log('  APPLICATION SUBMITTED!');
+      return { status: 'submitted', platform: 'lever' };
+    }
+    return { status: 'submitted', platform: 'lever' };
+  }
+  return { status: 'no_submit_button', platform: 'lever' };
 }
 
 // ── VERIFICATION CODE ENTRY ──
@@ -623,6 +1154,22 @@ async function fillAllFields(page, opts, container) {
   // Fill work authorization radio/checkbox/select questions
   await fillScreeningQuestions(page, root);
 
+  // Fill all unfilled dropdowns (standard + custom combobox)
+  const unfilledDrops = await findUnfilledDropdowns(page, root);
+  if (unfilledDrops.length > 0) {
+    console.log('  Found ' + unfilledDrops.length + ' unfilled dropdowns');
+    for (const dd of unfilledDrops) {
+      const value = getDropdownValue(dd.label, PROFILE);
+      if (value) {
+        console.log('    Dropdown: ' + dd.label + ' -> ' + value);
+        const success = await fillDropdown(page, dd.label, value, root);
+        if (success) filled++;
+      } else {
+        console.log('    Dropdown: ' + dd.label + ' -> SKIP (no value mapped)');
+      }
+    }
+  }
+
   return filled;
 }
 
@@ -1055,6 +1602,13 @@ async function main() {
     await delay(3000);
     await screenshot(page, outDir, '01-landing');
 
+    // Platform-specific handlers that don't need the generic flow
+    if (platform === 'greenhouse') {
+      result = await applyGreenhouse(page, opts, outDir);
+    } else if (platform === 'lever') {
+      result = await applyLever(page, opts, outDir);
+    } else {
+
     // Check for account creation / login on the landing page
     const accountResult = await checkAccountCreation(page, browser, opts);
     if (accountResult && accountResult.status === 'account_created') {
@@ -1314,6 +1868,7 @@ async function main() {
     } else if (platform === 'indeed') {
       result = await applyIndeed(page, opts, outDir);
     }
+    } // end of else (not greenhouse/lever)
 
   } catch (e) {
     console.error('  Error: ' + e.message);

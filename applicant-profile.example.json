@@ -60,6 +60,11 @@
     "industries": [],
     "employmentTypes": ["Full-time"],
     "workMode": ["On-site", "Hybrid", "Remote"],
+    "locations": ["Your City, ST"],
+    "compensationType": ["Salary", "Base + Commission", "Commission"],
+    "minSalary": 0,
+    "minBaseCommission": 0,
+    "oteTarget": 0,
     "experienceYears": 0,
     "salaryExpectation": "",
     "noticePeriod": "Immediately"
