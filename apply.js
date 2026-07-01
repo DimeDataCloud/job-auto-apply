@@ -1621,7 +1621,8 @@ async function main() {
       // First check if the current page is already the Workday apply page
       const pageUrl = page.url();
       const pageText = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 500) : '');
-      const isAlreadyWorkdayApply = pageUrl.includes('myworkdayjobs.com') && pageText.includes('Start Your Application');
+      const isAlreadyWorkdayApply = pageUrl.includes('myworkdayjobs.com') && 
+        (pageText.includes('Start Your Application') || pageText.includes('Apply Manually') || pageText.includes('Create Account') || pageText.includes('Password Requirements'));
 
       if (isAlreadyWorkdayApply) {
         console.log('  Already on Workday apply page. Starting application...');
@@ -1747,21 +1748,20 @@ async function main() {
                 if (wdCookieBtn) { await wdCookieBtn.click(); await delay(2000); }
                 
                 const wdApplyManual = await page.$('a:has-text("Apply Manually"), button:has-text("Apply Manually"), [data-automation-id*="applyManually"]');
-                if (wdApplyManual) { await wdApplyManual.click({ force: true }); console.log('  Clicked Apply Manually'); await delay(4000); }
+                if (wdApplyManual) { await wdApplyManual.click({ force: true }); console.log('  Clicked Apply Manually'); await delay(6000); }
                 
-                // Fill account creation form
+                // Fill account creation form using locators (more reliable than page.$)
                 console.log('  Filling Workday account creation form...');
-                const wdEmailInput = await page.$('[data-automation-id="email"], input[type="text"][data-automation-id="email"]');
-                if (wdEmailInput) {
+                try {
                   const freshEmail = (opts.email || 'test@gmail.com').replace('@', '+wd' + Date.now() + '@');
-                  await wdEmailInput.click({ clickCount: 3 });
-                  await wdEmailInput.fill(freshEmail);
+                  await page.locator('[data-automation-id="email"]').fill(freshEmail).catch(() => {});
                   console.log('  Filled email: ' + freshEmail);
-                  await page.fill('[data-automation-id="password"]', opts.password || 'Test1234!').catch(() => {});
-                  await page.fill('[data-automation-id="verifyPassword"]', opts.password || 'Test1234!').catch(() => {});
+                  await page.locator('[data-automation-id="password"]').fill(opts.password || 'Test1234!').catch(() => {});
+                  await page.locator('[data-automation-id="verifyPassword"]').fill(opts.password || 'Test1234!').catch(() => {});
                   console.log('  Filled password + verify');
-                  await delay(1000);
-                  
+                } catch(e) { console.log('  Form fill error: ' + e.message.slice(0, 100)); }
+                await delay(1000);
+                
                   const wdCreateBtn = await page.$('[data-automation-id="createAccountSubmitButton"], button:has-text("Create Account")');
                   if (wdCreateBtn) {
                     await wdCreateBtn.click({ force: true }).catch(async () => {
@@ -1773,7 +1773,10 @@ async function main() {
                   
                   // Check for email verification
                   const wdAfterText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
-                  const wdNeedsVerification = wdAfterText.includes('verification') || wdAfterText.includes('verify') || wdAfterText.includes('check your email') || wdAfterText.includes('code');
+                  const wdNeedsVerification = (wdAfterText.includes('verification') && !wdAfterText.includes('verify new password')) || 
+                    wdAfterText.includes('check your email') || wdAfterText.includes('we sent') || 
+                    wdAfterText.includes('enter the code') || wdAfterText.includes('verification code') ||
+                    wdAfterText.includes('one-time') || wdAfterText.includes('otp');
                   if (wdNeedsVerification) {
                     console.log('  *** EMAIL VERIFICATION REQUIRED ***');
                     const emailCreds = PROFILE.emailCredentials || {};
@@ -1826,7 +1829,6 @@ async function main() {
                       console.log('  No IMAP appPassword configured. Cannot auto-read.');
                     }
                   }
-                }
                 
                 // Run the wizard for the remaining steps
                 result = await navigateWizard(page, outDir, opts);

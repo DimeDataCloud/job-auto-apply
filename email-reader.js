@@ -175,7 +175,8 @@ async function fetchEmails(opts) {
 
   try {
     await client.connect();
-    const lock = await client.getMailboxLock(opts.folder);
+    const folder = opts.folder || 'INBOX';
+    const lock = await client.getMailboxLock(folder);
     try {
       // Search for recent emails
       const sinceDate = new Date(Date.now() - opts.since * 60 * 1000);
@@ -195,13 +196,13 @@ async function fetchEmails(opts) {
         if (!msg) continue;
 
         const env = msg.envelope || {};
-        const fromAddr = env.from && env.from[0] ? `${env.from[0].address || ''}` : '';
-        const fromName = env.from && env.from[0] ? `${env.from[0].name || ''}` : '';
+        const fromAddr = (env.from && env.from[0] && env.from[0].address) ? env.from[0].address : '';
+        const fromName = (env.from && env.from[0] && env.from[0].name) ? env.from[0].name : '';
         const subject = env.subject || '(no subject)';
-        const date = env.date || new Date();
+        const date = env.date ? new Date(env.date) : new Date();
 
         // Filter by sender if specified
-        if (opts.from && !fromAddr.toLowerCase().includes(opts.from) && !subject.toLowerCase().includes(opts.from)) {
+        if (opts.from && !(fromAddr || '').toLowerCase().includes(opts.from) && !(subject || '').toLowerCase().includes(opts.from)) {
           continue;
         }
 
@@ -225,19 +226,19 @@ async function fetchEmails(opts) {
           textBody = stripHtml(sourceStr).slice(0, 5000);
         }
 
-        const plainText = textBody || stripHtml(htmlBody);
-        const fullBody = (textBody + '\n' + stripHtml(htmlBody)).trim();
+        const plainText = (textBody || stripHtml(htmlBody) || '').slice(0, 5000);
+        const fullBody = ((textBody || '') + '\n' + stripHtml(htmlBody || '')).trim() || '';
 
-        const links = extractLinks(htmlBody + ' ' + textBody);
-        const codes = extractCodes(fullBody, subject);
+        const links = extractLinks((htmlBody || '') + ' ' + (textBody || ''));
+        const codes = extractCodes(fullBody, subject || '');
 
         results.push({
           uid,
-          from: fromAddr,
-          fromName,
-          subject,
+          from: fromAddr || '',
+          fromName: fromName || '',
+          subject: subject || '',
           date: date.toISOString(),
-          preview: plainText.slice(0, 500),
+          preview: (plainText || '').slice(0, 500),
           links,
           codes,
         });
