@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Browser profiles (contain session cookies, login state)
+profiles/
+
+# Output (tailored resumes, search results, screenshots, application results)
+output/
+
+# Real applicant data — use applicant-profile.example.json as template
+applicant-profile.json
+
+# Real master resumes — use master-resumes/example.json as template
+master-resumes/*.json
+!master-resumes/example.json
+
+# Keep the directory structure
+!profiles/.gitkeep
+!output/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temp/explore scripts
+_*.js
+_*.py

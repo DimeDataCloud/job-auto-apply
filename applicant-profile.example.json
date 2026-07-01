@@ -1,0 +1,85 @@
+{
+  "_comment": "Copy this file to applicant-profile.json and fill in YOUR data. This is the data Playwright types into job application forms.",
+  "activeResume": "example",
+  "resumes": {
+    "example": {
+      "file": "master-resumes/example.json",
+      "pdfTemplate": "example"
+    }
+  },
+  "identity": {
+    "firstName": "",
+    "lastName": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "linkedinUrl": "",
+    "website": "",
+    "githubUrl": "",
+    "portfolioUrl": "",
+    "country": "United States of America",
+    "address1": "",
+    "address2": "",
+    "city": "",
+    "state": "",
+    "postalCode": "",
+    "phoneDeviceType": "Mobile",
+    "phoneCountryCode": "United States of America (+1)",
+    "phoneExtension": ""
+  },
+  "workAuthorization": {
+    "authorizedToWorkInUS": true,
+    "requiresSponsorship": false,
+    "willingToRelocate": false,
+    "willingToTravel": true
+  },
+  "eeo": {
+    "_comment": "Optional EEO self-identification. Leave null to skip these questions if the form allows.",
+    "gender": "",
+    "race": "",
+    "veteran": "I am not a veteran",
+    "disability": "I don't have a disability"
+  },
+  "screening": {
+    "backgroundCheck": true,
+    "drugTest": true,
+    "felonyConviction": false,
+    "felonyExplanation": "",
+    "terminated": false,
+    "terminatedExplanation": "",
+    "howDidYouHear": "Indeed",
+    "previouslyWorked": false,
+    "previousWorkCity": "",
+    "smsConsent": true,
+    "termsConsent": true,
+    "dataConsent": true,
+    "eeoConsent": true
+  },
+  "jobPreferences": {
+    "roles": [],
+    "industries": [],
+    "employmentTypes": ["Full-time"],
+    "workMode": ["On-site", "Hybrid", "Remote"],
+    "experienceYears": 0,
+    "salaryExpectation": "",
+    "noticePeriod": "Immediately"
+  },
+  "accountCredentials": {
+    "_comment": "Used for creating accounts on external career sites (Workday, Taleo, etc.). NOT for LinkedIn/Indeed.",
+    "email": "",
+    "password": ""
+  },
+  "emailCredentials": {
+    "_comment": "Gmail App Password for IMAP email reading. Create at https://myaccount.google.com/apppasswords. Regular password will NOT work for IMAP.",
+    "email": "",
+    "appPassword": ""
+  },
+  "answers": {
+    "_comment": "Common screening question answers. Playwright will match these to form questions by keyword.",
+    "Why this company?": "",
+    "Why this role?": "",
+    "Tell me about yourself": "",
+    "What are your salary expectations?": "I'm flexible and more interested in the opportunity and growth path. I'm happy to discuss based on the full compensation package.",
+    "When can you start?": "Immediately"
+  }
+}

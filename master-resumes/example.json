@@ -1,0 +1,48 @@
+{
+  "name": "Example Resume",
+  "title": "Software Sales Professional",
+  "email": "your.email@gmail.com",
+  "phone": "+1 555-555-5555",
+  "linkedin": "https://www.linkedin.com/in/your-profile",
+  "location": "Your City, ST 12345",
+  "skills": [
+    "Account Management",
+    "Outbound Sales",
+    "Pipeline Management",
+    "CRM Systems",
+    "Client Relationship Management",
+    "Objection Handling",
+    "Sales Process Optimization",
+    "Team Leadership",
+    "Technology Solutions Selling",
+    "Data Analytics"
+  ],
+  "tools": ["Salesforce", "HubSpot", "Gmail", "Slack", "Zoom"],
+  "education": "Bachelor of Science — Your University",
+  "languages": ["English (Native)"],
+  "summary": "Results-driven sales professional with experience in high-volume outbound sales, team leadership, and technology solutions. Adept at driving sales execution and building client relationships.",
+  "workHistory": [
+    {
+      "title": "Sales Representative",
+      "company": "Company One",
+      "location": "Your City, ST",
+      "dates": "Jan 2024 – Present",
+      "bullets": "Execute high-volume outbound sales to prospective clients, demonstrating best practices in prospecting and qualification\nConsistently meet revenue and activity targets through disciplined daily outreach and effective objection handling\nBuild immediate rapport with prospects and convert cold conversations into closed accounts\nManage personal territory routing and follow-up systems to maintain accurate pipeline data"
+    },
+    {
+      "title": "Sales Associate",
+      "company": "Company Two",
+      "location": "Your City, ST",
+      "dates": "Jan 2023 – Dec 2023",
+      "bullets": "Managed client relationships through structured follow-up and direct communication\nTrained and coached new hires on sales communication strategies and objection handling\nProduced promotional content in coordination with marketing to elevate buyer engagement"
+    },
+    {
+      "title": "Junior Sales Associate",
+      "company": "Company Three",
+      "location": "Remote",
+      "dates": "Jan 2022 – Dec 2022",
+      "bullets": "Supported cross-functional teams and managed stakeholder communication\nApplied data analytics and market research to identify high-probability opportunities\nProduced educational content through structured presentation to drive audience engagement"
+    }
+  ],
+  "extraSections": []
+}

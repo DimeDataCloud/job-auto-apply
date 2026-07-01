@@ -1,0 +1,1339 @@
+// apply.js — Universal auto-apply engine.
+// Works on LinkedIn, Indeed, and external career sites (Workday, Greenhouse,
+// Lever, Taleo, iCIMS, and generic forms). Detects the platform, fills forms,
+// uploads resume, handles multi-page wizards, creates accounts when needed,
+// auto-reads verification emails, and pauses for CAPTCHA.
+//
+// Usage:
+//   node apply.js --url "https://..." --resume "output/.../resume.pdf"
+//   node apply.js --url "https://..." --resume "output/.../resume.pdf" --headless
+//   node apply.js --url "https://..." --resume "output/.../resume.pdf" --email "x@y.com" --password "pass123"
+//
+// The --email and --password args are used for account creation on external
+// sites that require registration before applying.
+//
+// Email verification: If a site sends a verification email after account
+// creation, apply.js reads it automatically via IMAP using the
+// emailCredentials from applicant-profile.json (Gmail App Password).
+// It extracts the verification link/code and completes the verification.
+
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
+
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = __dirname;
+const PROFILE = JSON.parse(fs.readFileSync(path.join(ROOT, 'applicant-profile.json'), 'utf-8'));
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const opts = { url: null, resume: null, headless: false, email: null, password: null, board: null };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--url' && args[i+1]) opts.url = args[++i];
+    else if (args[i] === '--resume' && args[i+1]) opts.resume = args[++i];
+    else if (args[i] === '--email' && args[i+1]) opts.email = args[++i];
+    else if (args[i] === '--password' && args[i+1]) opts.password = args[++i];
+    else if (args[i] === '--board' && args[i+1]) opts.board = args[++i];
+    else if (args[i] === '--headless') opts.headless = true;
+  }
+  if (!opts.url) {
+    console.error('Usage: node apply.js --url <job-url> --resume <pdf-path> [--email x@y.com --password pass --board linkedin|indeed|generic] [--headless]');
+    process.exit(1);
+  }
+  // Auto-fill email/password from applicant-profile.json if not passed via CLI
+  const acctCreds = PROFILE.accountCredentials || {};
+  if (!opts.email && acctCreds.email) {
+    opts.email = acctCreds.email;
+    console.log('Using account email from profile: ' + opts.email);
+  }
+  if (!opts.password && acctCreds.password) {
+    opts.password = acctCreds.password;
+  }
+  return opts;
+}
+
+async function screenshot(page, dir, name) {
+  const p = path.join(dir, name + '.png');
+  await page.screenshot({ path: p, fullPage: false });
+  console.log('  screenshot: ' + name + '.png');
+}
+
+async function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── CAPTCHA DETECTION ──
+async function checkCaptcha(page) {
+  const selectors = [
+    'iframe[src*="recaptcha"]','iframe[src*="hcaptcha"]','iframe[src*="turnstile"]',
+    'iframe[title*="captcha"]','iframe[title*="reCAPTCHA"]','.captcha','#captcha',
+    '[data-captcha]','iframe[title*="challenge"]',
+  ];
+  for (const sel of selectors) {
+    if (await page.$(sel)) return sel;
+  }
+  return null;
+}
+
+async function waitForCaptchaSolve(page) {
+  console.log('\n  *** CAPTCHA DETECTED ***');
+  console.log('  Please solve it in the browser window, then press Enter here.');
+  await page.bringToFront().catch(() => {});
+  await new Promise(resolve => { process.stdin.resume(); process.stdin.once('data', resolve); });
+  await delay(2000);
+  const still = await checkCaptcha(page);
+  if (still) { console.log('  CAPTCHA still detected. Please solve it.'); return false; }
+  console.log('  CAPTCHA cleared. Continuing...');
+  return true;
+}
+
+// ── PLATFORM DETECTION ──
+function detectPlatform(url, page) {
+  const u = url.toLowerCase();
+  if (u.includes('linkedin.com')) return 'linkedin';
+  if (u.includes('indeed.com')) return 'indeed';
+  if (u.includes('myworkdayjobs.com') || u.includes('workday')) return 'workday';
+  if (u.includes('greenhouse.io') || u.includes('greenhouse.com')) return 'greenhouse';
+  if (u.includes('lever.co')) return 'lever';
+  if (u.includes('taleo') || u.includes('oraclecloud')) return 'taleo';
+  if (u.includes('icims.com')) return 'icims';
+  if (u.includes('careers.labcorp.com') || u.includes('labcorp')) return 'workday'; // LabCorp uses Workday
+  return 'generic';
+}
+
+// ── VERIFICATION CODE ENTRY ──
+// Handles multiple UI patterns for entering verification codes:
+//   1. Single input field (most common)
+//   2. Separate digit boxes (one input per digit — Workday, some banks)
+//   3. OTP/pin grid inputs
+//   4. Textarea
+async function enterVerificationCode(page, code) {
+  console.log('  Entering verification code: ' + code);
+
+  // Strategy 1: Single input field by name/label/attributes
+  const singleInputSelectors = [
+    'input[name*="code"]', 'input[name*="otp"]', 'input[name*="verify"]',
+    'input[name*="verification"]', 'input[name*="pin"]', 'input[name*="token"]',
+    'input[aria-label*="code"]', 'input[aria-label*="verification"]',
+    'input[aria-label*="otp"]', 'input[aria-label*="verify"]',
+    'input[placeholder*="code"]', 'input[placeholder*="verification"]',
+    'input[placeholder*="otp"]', 'input[placeholder*="enter"]',
+    'input[data-automation-id*="code"]', 'input[data-automation-id*="otp"]',
+    'input[data-automation-id*="verification"]', 'input[data-automation-id*="verify"]',
+    'input[type="text"][maxlength="4"]', 'input[type="text"][maxlength="5"]',
+    'input[type="text"][maxlength="6"]', 'input[type="text"][maxlength="7"]',
+    'input[type="text"][maxlength="8"]',
+    'input[type="tel"][maxlength="4"]', 'input[type="tel"][maxlength="6"]',
+    'input[type="number"]',
+  ];
+
+  for (const sel of singleInputSelectors) {
+    try {
+      const el = await page.$(sel);
+      if (el) {
+        const visible = await el.isVisible().catch(() => true);
+        if (!visible) continue;
+        await el.click({ clickCount: 3 });
+        await el.fill(code);
+        console.log('  Entered code into single field: ' + sel);
+        await delay(500);
+
+        // Look for a submit/verify/confirm button
+        const submitSelectors = [
+          'button:has-text("Verify")', 'button:has-text("Submit")', 'button:has-text("Confirm")',
+          'button:has-text("Continue")', 'button:has-text("Next")', 'button:has-text("Complete")',
+          'button:has-text("Apply")', 'button[type="submit"]',
+          '[data-automation-id*="submit"]', '[data-automation-id*="verify"]',
+          '[data-automation-id*="continue"]', '[data-automation-id*="next"]',
+        ];
+        for (const ssel of submitSelectors) {
+          try {
+            const btn = await page.$(ssel);
+            if (btn) {
+              const disabled = await btn.isDisabled().catch(() => false);
+              if (!disabled) { await btn.click(); console.log('  Clicked submit: ' + ssel); await delay(3000); break; }
+            }
+          } catch (e) {}
+        }
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 2: Separate digit boxes (one input per digit)
+  // Look for a group of inputs with maxlength=1 that are adjacent
+  const digitInputs = await page.$$('input[maxlength="1"]:visible, input[data-automation-id*="digit"], input[class*="digit"], input[class*="otp-digit"], input[class*="code-input"]');
+  if (digitInputs.length >= 4 && digitInputs.length <= 8) {
+    console.log('  Found ' + digitInputs.length + ' separate digit input boxes');
+    for (let i = 0; i < Math.min(code.length, digitInputs.length); i++) {
+      try {
+        await digitInputs[i].click();
+        await digitInputs[i].fill(code[i]);
+        await delay(100);
+      } catch (e) {}
+    }
+    console.log('  Entered code across digit boxes');
+
+    // Some sites auto-submit when all digits are entered; wait a moment
+    await delay(2000);
+
+    // Otherwise look for a submit button
+    const submitBtn = await page.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Continue"), button[type="submit"], [data-automation-id*="submit"], [data-automation-id*="verify"]');
+    if (submitBtn) {
+      const disabled = await submitBtn.isDisabled().catch(() => false);
+      if (!disabled) { await submitBtn.click(); console.log('  Clicked submit after digit entry'); await delay(3000); }
+    }
+    return true;
+  }
+
+  // Strategy 3: Textarea
+  const textarea = await page.$('textarea[name*="code"], textarea[aria-label*="code"], textarea[aria-label*="verification"], textarea[placeholder*="code"]');
+  if (textarea) {
+    await textarea.click({ clickCount: 3 });
+    await textarea.fill(code);
+    console.log('  Entered code into textarea');
+    await delay(500);
+    const submitBtn = await page.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button[type="submit"]');
+    if (submitBtn) { await submitBtn.click(); await delay(3000); }
+    return true;
+  }
+
+  // Strategy 4: Look for any visible text input on the page that we haven't tried
+  const anyInput = await page.$('input[type="text"]:visible, input[type="tel"]:visible, input[type="number"]:visible');
+  if (anyInput) {
+    try {
+      await anyInput.click({ clickCount: 3 });
+      await anyInput.fill(code);
+      console.log('  Entered code into fallback visible input');
+      await delay(500);
+      const submitBtn = await page.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Continue"), button[type="submit"]');
+      if (submitBtn) { await submitBtn.click(); await delay(3000); }
+      return true;
+    } catch (e) {}
+  }
+
+  console.log('  WARNING: Could not find a verification code input field on the page');
+  console.log('  The code was: ' + code + ' — you may need to enter it manually');
+  return false;
+}
+
+// ── ACCOUNT CREATION DETECTION ──
+async function checkAccountCreation(page, context, opts) {
+  // Detect signup/register/create account pages
+  const signupSelectors = [
+    'input[name*="password"]:not([type="hidden"])',
+    'input[type="password"]',
+    'button:has-text("Create Account")','button:has-text("Sign Up")',
+    'button:has-text("Register")','button:has-text("Create account")',
+    'a:has-text("Create Account")','a:has-text("Sign Up")',
+    'a:has-text("Register")','a:has-text("Create account")',
+    'text=/create.*account/i','text=/sign.*up/i','text=/register/i',
+  ];
+
+  // Check if we're on a login/signup page
+  const pageText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+  const isSignup = pageText.includes('create account') || pageText.includes('sign up') ||
+                   pageText.includes('register') || pageText.includes('new user') ||
+                   pageText.includes('first time') || pageText.includes('don\'t have an account');
+
+  // Check for password field (signup pages have these, browse pages don't)
+  const hasPasswordField = await page.$('input[type="password"]:not([type="hidden"])');
+
+  if (isSignup || (hasPasswordField && !pageText.includes('sign in'))) {
+    console.log('\n  *** ACCOUNT CREATION DETECTED ***');
+    console.log('  This site requires an account before applying.');
+
+    if (!opts.email || !opts.password) {
+      console.log('\n  Email and password not provided via CLI args.');
+      console.log('  Please provide them now to create the account:');
+      console.log('  (or solve it manually in the browser if you prefer)');
+
+      // Check if there's a "continue as guest" or "apply without account" option
+      const guestBtn = await page.$('a:has-text("Continue as guest"), button:has-text("Continue"), a:has-text("Apply without"), button:has-text("Skip")');
+      if (guestBtn) {
+        console.log('  Found a "Continue" option — trying to proceed without account...');
+        await guestBtn.click();
+        await delay(3000);
+        return { status: 'skipped_account' };
+      }
+
+      // Pause for user to handle manually if no email/password
+      console.log('\n  No account credentials available. Please create an account manually in the browser,');
+      console.log('  then press Enter to continue with the application.');
+      await page.bringToFront().catch(() => {});
+      await new Promise(resolve => { process.stdin.resume(); process.stdin.once('data', resolve); });
+      await delay(2000);
+      return { status: 'manual_account' };
+    }
+
+    console.log('  Creating account with: ' + opts.email);
+
+    // Fill email field
+    const emailSelectors = [
+      'input[name*="email"]','input[type="email"]','input[id*="email"]',
+      'input[placeholder*="email"]','input[aria-label*="email"]',
+    ];
+    for (const sel of emailSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) { await el.click({ clickCount: 3 }); await el.fill(opts.email); console.log('  Filled email: ' + opts.email); break; }
+      } catch (e) {}
+    }
+
+    // Fill password field
+    const passwordSelectors = [
+      'input[type="password"]','input[name*="password"]','input[id*="password"]',
+    ];
+    for (const sel of passwordSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) { await el.click({ clickCount: 3 }); await el.fill(opts.password); console.log('  Filled password'); break; }
+      } catch (e) {}
+    }
+
+    // Fill confirm password if present
+    const confirmSelectors = [
+      'input[name*="confirm"]','input[name*="verify"]','input[id*="confirm"]',
+      'input[placeholder*="confirm"]',
+    ];
+    for (const sel of confirmSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) { await el.click({ clickCount: 3 }); await el.fill(opts.password); console.log('  Filled confirm password'); break; }
+      } catch (e) {}
+    }
+
+    // Fill first/last name if present (signup forms often ask)
+    const id = PROFILE.identity;
+    const firstNameSelectors = ['input[name*="first"]','input[id*="first"]','input[placeholder*="first"]'];
+    for (const sel of firstNameSelectors) {
+      try { const el = await page.$(sel); if (el) { await el.click({clickCount:3}); await el.fill(id.firstName); console.log('  Filled first name'); break; } } catch (e) {}
+    }
+    const lastNameSelectors = ['input[name*="last"]','input[id*="last"]','input[placeholder*="last"]'];
+    for (const sel of lastNameSelectors) {
+      try { const el = await page.$(sel); if (el) { await el.click({clickCount:3}); await el.fill(id.lastName); console.log('  Filled last name'); break; } } catch (e) {}
+    }
+
+    await delay(1000);
+
+    // Check for CAPTCHA before submitting
+    const captcha = await checkCaptcha(page);
+    if (captcha) { await waitForCaptchaSolve(page); }
+
+    // Click create account / sign up / register button
+    const submitSelectors = [
+      'button:has-text("Create Account")','button:has-text("Sign Up")','button:has-text("Register")',
+      'button:has-text("Create account")','button:has-text("Submit")','button[type="submit"]',
+    ];
+    for (const sel of submitSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) { const text = await el.textContent(); await el.click(); console.log('  Clicked: ' + text.trim()); await delay(3000); break; }
+      } catch (e) {}
+    }
+
+    // Check for email verification
+    const verifyText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+    const needsVerification = verifyText.includes('verification') || verifyText.includes('verify your email') ||
+                               verifyText.includes('check your email') || verifyText.includes('verify your account') ||
+                               verifyText.includes('confirm your email') || verifyText.includes('activate your account') ||
+                               verifyText.includes('we sent') || verifyText.includes('verification link') ||
+                               verifyText.includes('verification code') || verifyText.includes('one-time') ||
+                               verifyText.includes('otp') || verifyText.includes('enter the code');
+
+    if (needsVerification) {
+      console.log('\n  *** EMAIL VERIFICATION REQUIRED ***');
+      console.log('  A verification email has been sent to ' + opts.email);
+
+      const emailCreds = PROFILE.emailCredentials || {};
+      const hasImap = emailCreds.email && emailCreds.appPassword;
+
+      if (hasImap) {
+        console.log('  Auto-reading verification email via IMAP...');
+
+        try {
+          const { fetchEmails } = require('./email-reader.js');
+          const sinceMinutes = 5; // check last 5 minutes
+          const verifyEmails = await fetchEmails({
+            email: emailCreds.email,
+            password: emailCreds.appPassword,
+            since: sinceMinutes,
+          });
+
+          // Find the verification email
+          const recent = verifyEmails.filter(e => {
+            const text = (e.subject + ' ' + e.preview).toLowerCase();
+            return text.includes('verify') || text.includes('verification') ||
+                   text.includes('confirm') || text.includes('activate') ||
+                   text.includes('account') || text.includes('workday') ||
+                   text.includes('welcome') || text.includes('code') ||
+                   e.links.length > 0 || e.codes.length > 0;
+          }).sort((a, b) => new Date(b.date) - new Date(a.date));
+
+          if (recent.length > 0) {
+            const email = recent[0];
+            console.log('  Found verification email: ' + email.subject);
+            console.log('  From: ' + email.from);
+            console.log('  Links: ' + email.links.length + ', Codes: ' + email.codes.length);
+
+            if (email.links && email.links.length > 0) {
+              // Try to find a verification link (not an unsubscribe link)
+              const verifyLinks = email.links.filter(l =>
+                !l.includes('unsubscribe') && !l.includes('privacy') && !l.includes('terms')
+              );
+              const link = verifyLinks[0] || email.links[0];
+              console.log('  Opening verification link: ' + link.slice(0, 100));
+              await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await delay(3000);
+              console.log('  Navigated to verification URL: ' + page.url());
+
+              const afterVerifyText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+              if (afterVerifyText.includes('verified') || afterVerifyText.includes('confirmed') ||
+                  afterVerifyText.includes('activated') || afterVerifyText.includes('success') ||
+                  afterVerifyText.includes('thank you') || afterVerifyText.includes('complete')) {
+                console.log('  Email verified successfully!');
+                return { status: 'account_created', verified: true };
+              }
+              console.log('  Verification link opened. Continuing...');
+              return { status: 'account_created', verified: true };
+            }
+
+            if (email.codes && email.codes.length > 0) {
+              // Enter verification code into the page
+              const code = email.codes[0];
+              console.log('  Found verification code: ' + code);
+              await enterVerificationCode(page, code);
+              return { status: 'account_created', verified: true };
+            }
+          } else {
+            console.log('  No verification email found yet. Waiting 30s and retrying...');
+            await delay(30000);
+            const retry = await fetchEmails({
+              email: emailCreds.email,
+              password: emailCreds.appPassword,
+              since: 10,
+            });
+            const retryRecent = retry.filter(e => {
+              const text = (e.subject + ' ' + e.preview).toLowerCase();
+              return text.includes('verify') || text.includes('verification') ||
+                     text.includes('confirm') || text.includes('activate') ||
+                     text.includes('workday') || text.includes('code') || e.links.length > 0;
+            }).sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            if (retryRecent.length > 0) {
+              const retryEmail = retryRecent[0];
+              if (retryEmail.links && retryEmail.links.length > 0) {
+                const link = retryEmail.links.filter(l => !l.includes('unsubscribe')).pop() || retryEmail.links[0];
+                console.log('  Found verification link on retry: ' + link.slice(0, 100));
+                await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await delay(3000);
+                return { status: 'account_created', verified: true };
+              }
+              if (retryEmail.codes && retryEmail.codes.length > 0) {
+                console.log('  Found verification code on retry: ' + retryEmail.codes[0]);
+                await enterVerificationCode(page, retryEmail.codes[0]);
+                return { status: 'account_created', verified: true };
+              }
+            }
+            console.log('  Still no verification email found after retry.');
+          }
+        } catch (e) {
+          console.log('  IMAP reading failed: ' + e.message);
+        }
+
+        // Fallback: wait for manual verification
+        console.log('\n  Could not auto-read email. Please verify manually:');
+        console.log('  1. Check ' + opts.email + ' for a verification email');
+        console.log('  2. Click the verification link or enter the code');
+        console.log('  3. Press Enter here to continue');
+        await page.bringToFront().catch(() => {});
+        await new Promise(resolve => { process.stdin.resume(); process.stdin.once('data', resolve); });
+        await delay(2000);
+      } else {
+        // No IMAP credentials configured — ask user to verify manually
+        console.log('\n  No IMAP credentials configured for auto-reading.');
+        console.log('  To enable auto-verification, add emailCredentials to applicant-profile.json');
+        console.log('  (Gmail App Password from https://myaccount.google.com/apppasswords)');
+        console.log('\n  Please verify manually:');
+        console.log('  1. Check ' + opts.email + ' for a verification email');
+        console.log('  2. Click the verification link or enter the code');
+        console.log('  3. Press Enter here to continue');
+        await page.bringToFront().catch(() => {});
+        await new Promise(resolve => { process.stdin.resume(); process.stdin.once('data', resolve); });
+        await delay(2000);
+      }
+    }
+
+    console.log('  Account creation step completed');
+    return { status: 'account_created' };
+  }
+
+  return null; // not a signup page
+}
+
+// ── UNIVERSAL FIELD FILLER ──
+// Tries multiple strategies to find and fill a field by semantic label
+async function fillSmart(page, fieldType, value, container) {
+  const root = container || page;
+
+  // Strategy 1: Common name attributes
+  const namePatterns = {
+    firstName: ['firstname','first_name','fname','given_name','givenname'],
+    lastName: ['lastname','last_name','lname','family_name','familyname','surname'],
+    fullName: ['fullname','full_name','name','applicant_name','candidate_name'],
+    email: ['email','email_address','e-mail','user_email','login'],
+    phone: ['phone','phone_number','mobile','telephone','tel','cell','contact_number','primary_phone'],
+    address: ['address','street','address1','mailing_address','location_address'],
+    city: ['city','town','locality'],
+    state: ['state','province','region'],
+    zip: ['zip','zip_code','postal','postal_code','postcode'],
+    country: ['country','nation'],
+    linkedin: ['linkedin','linkedin_url','linkedin_profile','website','url','portfolio','github','blog'],
+    coverLetter: ['cover_letter','coverletter','message','comments','additional_info','why'],
+    salary: ['salary','compensation','expected_salary','salary_expectation','desired_salary','pay'],
+  };
+
+  // Strategy 2: aria-label / placeholder / label text
+  const labelKeywords = {
+    firstName: ['first name','given name'],
+    lastName: ['last name','family name','surname'],
+    fullName: ['full name','your name','name'],
+    email: ['email','e-mail'],
+    phone: ['phone','mobile','telephone','cell'],
+    address: ['address','street'],
+    city: ['city','town'],
+    state: ['state','province'],
+    zip: ['zip','postal'],
+    country: ['country'],
+    linkedin: ['linkedin','website','url','portfolio','github'],
+    coverLetter: ['cover letter','message','comments','additional','why'],
+    salary: ['salary','compensation','pay','desired'],
+  };
+
+  // Try name attribute patterns
+  const names = namePatterns[fieldType] || [];
+  for (const name of names) {
+    try {
+      const el = await root.$(`input[name*="${name}"]:not([type="hidden"]):not([type="file"]), textarea[name*="${name}"], select[name*="${name}"]`);
+      if (el) {
+        const currentVal = await el.inputValue().catch(() => '');
+        if (currentVal && currentVal.trim()) continue;
+        await el.click({ clickCount: 3 });
+        if (el.tagName.toLowerCase() === 'select' || (await el.getAttribute('type')) === 'select') {
+          // Handle select
+          await el.selectOption(value);
+        } else {
+          await el.fill(value);
+        }
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // Try aria-label / placeholder
+  const keywords = labelKeywords[fieldType] || [];
+  for (const kw of keywords) {
+    try {
+      const el = await root.$(`input[aria-label*="${kw}" i]:not([type="hidden"]):not([type="file"]), input[placeholder*="${kw}" i]:not([type="hidden"]), textarea[aria-label*="${kw}" i], textarea[placeholder*="${kw}" i]`);
+      if (el) {
+        const currentVal = await el.inputValue().catch(() => '');
+        if (currentVal && currentVal.trim()) continue;
+        await el.click({ clickCount: 3 });
+        await el.fill(value);
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 3: Find label elements and match to their associated inputs
+  for (const kw of keywords) {
+    try {
+      const labels = await root.$$('label, [class*="label"], [class*="field-label"]');
+      for (const label of labels) {
+        const labelText = (await label.textContent()).toLowerCase().trim();
+        if (labelText.includes(kw)) {
+          // Find the for attribute or sibling input
+          const forId = await label.getAttribute('for');
+          let input = null;
+          if (forId) {
+            input = await root.$('#' + forId);
+          }
+          if (!input) {
+            input = await label.$('.., input, textarea, select');
+            if (input && (await input.tagName).toLowerCase() === 'label') input = null;
+          }
+          if (!input) {
+            // Try next sibling
+            const parent = await label.evaluateHandle(el => el.parentElement);
+            input = await parent.$('input, textarea, select');
+          }
+          if (input) {
+            const currentVal = await input.inputValue().catch(() => '');
+            if (currentVal && currentVal.trim()) continue;
+            await input.click({ clickCount: 3 });
+            await input.fill(value);
+            return true;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return false;
+}
+
+// ── UNIVERSAL FORM FILLER ──
+async function fillAllFields(page, opts, container) {
+  const id = PROFILE.identity;
+  const root = container || page;
+  let filled = 0;
+
+  // Core identity fields
+  const fields = [
+    ['firstName', id.firstName],
+    ['lastName', id.lastName],
+    ['fullName', id.firstName + ' ' + id.lastName],
+    ['email', id.email],
+    ['phone', id.phone],
+    ['address', id.address1 || id.location],
+    ['city', id.city || ''],
+    ['state', id.state || ''],
+    ['zip', id.postalCode || ''],
+    ['country', id.country || 'United States'],
+    ['linkedin', id.linkedinUrl],
+  ];
+
+  // Add cover letter from answers if available
+  const answers = PROFILE.answers || {};
+  if (answers['Why this company?'] || answers['Tell me about yourself']) {
+    const coverText = answers['Why this company?'] || answers['Tell me about yourself'];
+    fields.push(['coverLetter', coverText.slice(0, 2000)]);
+  }
+
+  // Add salary expectation if available
+  if (PROFILE.jobPreferences && PROFILE.jobPreferences.salaryExpectation) {
+    fields.push(['salary', PROFILE.jobPreferences.salaryExpectation]);
+  }
+
+  for (const [fieldType, value] of fields) {
+    const result = await fillSmart(page, fieldType, value, root);
+    if (result) { console.log('    Filled ' + fieldType); filled++; await delay(300); }
+  }
+
+  // Fill work authorization radio/checkbox/select questions
+  await fillScreeningQuestions(page, root);
+
+  return filled;
+}
+
+// ── SCREENING QUESTIONS HANDLER ──
+async function fillScreeningQuestions(page, container) {
+  const root = container || page;
+  const wa = PROFILE.workAuthorization || {};
+  const eeo = PROFILE.eeo || {};
+  const screening = PROFILE.screening || {};
+
+  // Find all radio groups and checkboxes
+  const questions = await root.$$('fieldset, [role="group"], .form-question, [class*="question"]');
+
+  for (const q of questions) {
+    try {
+      const qText = (await q.textContent()).toLowerCase();
+
+      // Work authorization
+      if (qText.includes('authorized') || qText.includes('legally') || qText.includes('eligible to work')) {
+        const yesRadio = await q.$('input[type="radio"][value*="yes" i], input[type="radio"][value*="true" i], label:has-text("Yes") input, input[type="checkbox"][value*="yes" i]');
+        if (yesRadio) { await yesRadio.check(); console.log('    Answered: authorized to work = yes'); await delay(300); }
+      }
+
+      // Sponsorship
+      if (qText.includes('sponsorship') || qText.includes('visa') || qText.includes('require sponsorship')) {
+        const answer = wa.requiresSponsorship ? 'yes' : 'no';
+        const radio = await q.$(`input[type="radio"][value*="${answer}" i], label:has-text("${answer === 'yes' ? 'Yes' : 'No'}") input`);
+        if (radio) { await radio.check(); console.log('    Answered: requires sponsorship = ' + answer); await delay(300); }
+      }
+
+      // Veteran status
+      if (qText.includes('veteran')) {
+        const vetAnswer = eeo.veteran || 'I am not a veteran';
+        const radio = await q.$(`label:has-text("${vetAnswer}") input, input[value*="${vetAnswer}" i]`);
+        if (radio) { await radio.check(); console.log('    Answered: veteran status'); await delay(300); }
+      }
+
+      // Disability
+      if (qText.includes('disability')) {
+        const disAnswer = eeo.disability || "I don't have a disability";
+        const radio = await q.$(`label:has-text("${disAnswer}") input, input[value*="${disAnswer}" i]`);
+        if (radio) { await radio.check(); console.log('    Answered: disability status'); await delay(300); }
+      }
+
+      // Background check
+      if (qText.includes('background') || qText.includes('criminal')) {
+        if (screening.backgroundCheck) {
+          const radio = await q.$('input[type="radio"][value*="yes" i], label:has-text("Yes") input');
+          if (radio) { await radio.check(); console.log('    Answered: background check = yes'); await delay(300); }
+        }
+      }
+
+      // Drug test
+      if (qText.includes('drug')) {
+        if (screening.drugTest) {
+          const radio = await q.$('input[type="radio"][value*="yes" i], label:has-text("Yes") input');
+          if (radio) { await radio.check(); console.log('    Answered: drug test = yes'); await delay(300); }
+        }
+      }
+
+      // Felony conviction
+      if (qText.includes('felony') || qText.includes('convicted')) {
+        const answer = screening.felonyConviction ? 'yes' : 'no';
+        const radio = await q.$(`input[type="radio"][value*="${answer}" i], label:has-text("${answer === 'yes' ? 'Yes' : 'No'}") input`);
+        if (radio) { await radio.check(); console.log('    Answered: felony = ' + answer); await delay(300); }
+      }
+    } catch (e) {}
+  }
+
+  // ── AUTO-APPROVE ALL CONSENT/AGREEMENT CHECKBOXES ──
+  // User has pre-consented to everything. Check all consent/terms/acknowledge boxes.
+  const consentKeywords = [
+    'consent', 'agree', 'acknowledge', 'authorize', 'confirm', 'accept',
+    'i have read', 'i understand', 'terms', 'conditions', 'privacy',
+    'data protection', 'sms', 'text message', 'electronic communication',
+    'background', 'drug test', 'eeo', 'voluntary', 'self-identify',
+  ];
+  const allCheckboxes = await root.$$('[role="checkbox"], input[type="checkbox"]');
+  for (const cb of allCheckboxes) {
+    try {
+      // Check if already checked
+      const isChecked = await cb.isChecked().catch(() => false);
+      if (isChecked) continue;
+
+      // Get associated label/text
+      const ariaLabel = (await cb.getAttribute("aria-label") || "").toLowerCase();
+      const cbId = await cb.getAttribute("id") || "";
+      let labelText = ariaLabel;
+      if (!labelText && cbId) {
+        const labelEl = await root.$('label[for="' + cbId + '"]');
+        if (labelEl) labelText = (await labelEl.textContent()).toLowerCase();
+      }
+      if (!labelText) {
+        // Try parent text
+        const parent = await cb.evaluateHandle(el => el.parentElement);
+        if (parent) labelText = (await parent.textContent()).toLowerCase().slice(0, 300);
+      }
+
+      // Check if this is a consent/agreement checkbox
+      const isConsent = consentKeywords.some(kw => labelText.includes(kw));
+      // Also check required checkboxes
+      const required = await cb.getAttribute("aria-required");
+      if (isConsent || required === "true") {
+        await cb.click({ force: true }).catch(() => {});
+        console.log('    Auto-approved: ' + labelText.slice(0, 80));
+        await delay(200);
+      }
+    } catch (e) {}
+  }
+
+  // Also try select dropdowns for screening questions
+  const selects = await root.$$('select');
+  for (const sel of selects) {
+    try {
+      const selText = (await sel.textContent()).toLowerCase();
+      const options = await sel.$$('option');
+      const optionTexts = await Promise.all(options.map(o => o.textContent().catch(() => '')));
+
+      if (selText.includes('authorized') || selText.includes('work')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes('yes') || optionTexts[i].toLowerCase().includes('authorized')) {
+            await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
+          }
+        }
+      }
+      if (selText.includes('sponsorship')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes('no') || optionTexts[i].toLowerCase().includes('not')) {
+            await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
+          }
+        }
+      }
+      if (selText.includes('gender') || selText.includes('sex')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes(eeo.gender ? eeo.gender.toLowerCase() : 'male')) {
+            await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
+          }
+        }
+      }
+      if (selText.includes('race') || selText.includes('ethnic')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes(eeo.race ? eeo.race.toLowerCase() : 'white')) {
+            await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
+          }
+        }
+      }
+      if (selText.includes('veteran')) {
+        for (let i = 0; i < optionTexts.length; i++) {
+          if (optionTexts[i].toLowerCase().includes(eeo.veteran ? eeo.veteran.toLowerCase() : 'not a veteran')) {
+            await sel.selectOption({ index: i }); console.log('    Selected: ' + optionTexts[i]); break;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+// ── FILE UPLOAD ──
+async function uploadResume(page, resumePath) {
+  if (!resumePath || !fs.existsSync(resumePath)) {
+    console.log('    No resume file to upload');
+    return false;
+  }
+
+  // Strategy 1: Direct file input
+  const fileInputs = await page.$$('input[type="file"]');
+  for (const fi of fileInputs) {
+    try {
+      await fi.setInputFiles(resumePath);
+      console.log('    Uploaded resume: ' + resumePath);
+      await delay(2000);
+      return true;
+    } catch (e) {}
+  }
+
+  // Strategy 2: Click "upload" button then handle the file dialog
+  const uploadBtns = await page.$$('button:has-text("Upload"), button:has-text("Attach"), button:has-text("Add file"), [class*="upload"], [class*="attach"], label:has-text("Resume"), label:has-text("CV")');
+  for (const btn of uploadBtns) {
+    try {
+      // Set up file chooser handler before clicking
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 5000 }),
+        btn.click(),
+      ]);
+      await fileChooser.setFiles(resumePath);
+      console.log('    Uploaded resume via file chooser: ' + resumePath);
+      await delay(2000);
+      return true;
+    } catch (e) {}
+  }
+
+  console.log('    Could not find resume upload field');
+  return false;
+}
+
+// ── WIZARD NAVIGATION ──
+async function navigateWizard(page, outDir, opts) {
+  const maxSteps = 25;
+  let step = 0;
+
+  while (step < maxSteps) {
+    console.log('\n  --- Wizard step ' + (step + 1) + ' ---');
+
+    // Check for CAPTCHA
+    const captcha = await checkCaptcha(page);
+    if (captcha) {
+      const solved = await waitForCaptchaSolve(page);
+      if (!solved) return { status: 'captcha_failed' };
+    }
+
+    // Check for account creation / login requirement
+    const accountResult = await checkAccountCreation(page, null, opts);
+    if (accountResult && accountResult.status === 'account_created') {
+      await delay(3000);
+    }
+
+    // Fill all fields on this page
+    const filled = await fillAllFields(page, opts);
+    console.log('  Filled ' + filled + ' fields');
+
+    // Upload resume if there's a file input
+    await uploadResume(page, opts.resume);
+
+    await screenshot(page, outDir, 'step-' + step + '-filled');
+
+    // Click Next / Continue / Submit / Apply
+    const nextSelectors = [
+      'button:has-text("Next")','button:has-text("Continue")','button:has-text("Review")',
+      'button:has-text("Submit")','button:has-text("Apply")','button:has-text("Send Application")',
+      'button:has-text("Complete")','button:has-text("Finish")','button:has-text("Done")',
+      'button:has-text("Save and Continue")','button:has-text("Save & Continue")',
+      'button[type="submit"]','button[type="button"][class*="next"]','button[type="button"][class*="continue"]',
+      'input[type="submit"]','input[type="button"][value*="Next"]','input[type="button"][value*="Continue"]',
+      'a:has-text("Next")','a:has-text("Continue")','a:has-text("Submit")','a:has-text("Apply")',
+    ];
+
+    let clicked = false;
+    for (const sel of nextSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const text = (await btn.textContent()).trim();
+          if (text && !text.includes('Cancel') && !text.includes('Close') && !text.includes('Back') && !text.includes('Previous')) {
+            // Check if button is disabled
+            const disabled = await btn.isDisabled().catch(() => false);
+            if (disabled) { console.log('  Button disabled: "' + text + '" — may need required fields'); continue; }
+            await btn.click();
+            console.log('  Clicked: "' + text + '"');
+            clicked = true;
+            await delay(3000);
+            break;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!clicked) {
+      console.log('  No Next/Submit button found. Checking if done...');
+
+      // Check for success / confirmation
+      const pageText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+      if (pageText.includes('submitted') || pageText.includes('application received') ||
+          pageText.includes('thank you') || pageText.includes('confirmation') ||
+          pageText.includes('successfully') || pageText.includes('applied') ||
+          pageText.includes('application complete')) {
+        console.log('  Application submitted successfully!');
+        await screenshot(page, outDir, 'final-submitted');
+        return { status: 'submitted' };
+      }
+
+      // Check if there's an error message
+      const errorEl = await page.$('[class*="error"]:not(:empty), .alert-danger, .form-error, [role="alert"]');
+      if (errorEl) {
+        const errorText = await errorEl.textContent().catch(() => '');
+        if (errorText.trim()) {
+          console.log('  Error detected: ' + errorText.trim().slice(0, 200));
+          await screenshot(page, outDir, 'step-' + step + '-error');
+          return { status: 'error', error: errorText.trim().slice(0, 500) };
+        }
+      }
+
+      await screenshot(page, outDir, 'step-' + step + '-stuck');
+      console.log('  Could not find next button or success message. Pausing for manual help.');
+      console.log('  Please check the browser and press Enter if you fix it, or type "skip" to abort.');
+      await page.bringToFront().catch(() => {});
+      const response = await new Promise(resolve => {
+        process.stdin.resume();
+        process.stdin.once('data', d => resolve(d.toString().trim().toLowerCase()));
+      });
+      if (response === 'skip' || response === 'abort') return { status: 'manual_abort' };
+      await delay(2000);
+    }
+
+    // Check for success after navigation
+    await delay(2000);
+    const pageText2 = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+    if (pageText2.includes('submitted') || pageText2.includes('application received') ||
+        pageText2.includes('thank you') || pageText2.includes('confirmation') ||
+        pageText2.includes('successfully') || pageText2.includes('applied') ||
+        pageText2.includes('application complete')) {
+      console.log('  Application submitted successfully!');
+      await screenshot(page, outDir, 'final-submitted');
+      return { status: 'submitted' };
+    }
+
+    step++;
+  }
+
+  await screenshot(page, outDir, 'final');
+  return { status: 'completed_unknown' };
+}
+
+// ── LINKEDIN EASY APPLY ──
+async function applyLinkedIn(page, opts, outDir) {
+  console.log('\n[LinkedIn]');
+
+  // Check if logged in
+  const loginCheck = await page.$('input[name="session_key"], .sign-in-form, .authwall');
+  if (loginCheck) {
+    console.log('  NOT LOGGED IN. Run: node login.js --board linkedin');
+    return { status: 'not_logged_in' };
+  }
+
+  // Find Easy Apply button
+  const easyApplySelectors = [
+    'button.jobs-apply-button','button:has-text("Easy Apply")','.jobs-s-apply button',
+    'button[aria-label*="Easy Apply"]','button.jobs-apply-button--top-card',
+  ];
+
+  for (const sel of easyApplySelectors) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) { await btn.click(); console.log('  Clicked Easy Apply'); await delay(3000); break; }
+    } catch (e) {}
+  }
+
+  // Check if it's an external apply
+  const extBtn = await page.$('a:has-text("Apply"), a[href*="apply"]');
+  const modal = await page.$('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal');
+
+  if (!modal && extBtn) {
+    const href = await extBtn.getAttribute('href');
+    console.log('  External Apply (not Easy Apply). Following redirect...');
+    if (href) {
+      await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await delay(3000);
+      // Now use the universal wizard handler on the external page
+      return await navigateWizard(page, outDir, opts);
+    }
+    return { status: 'external_apply', externalUrl: href };
+  }
+
+  // Easy Apply modal — use wizard handler
+  return await navigateWizard(page, outDir, opts);
+}
+
+// ── INDEED APPLY ──
+async function applyIndeed(page, opts, outDir) {
+  console.log('\n[Indeed]');
+
+  // Check if logged in
+  const loggedIn = await page.$('.gnav-UserMenu, [data-testid="user-menu"]');
+  const loginCheck = await page.$('#login-email, #login-password, .gnav-LoginButton');
+  if (loginCheck && !loggedIn) {
+    console.log('  NOT LOGGED IN. Run: node login.js --board indeed');
+    return { status: 'not_logged_in' };
+  }
+
+  // Find Apply button
+  const applySelectors = [
+    'button:has-text("Apply now")','button:has-text("Apply Now")','button:has-text("Apply")',
+    '#applyButton','[data-testid="apply-button"]','.jobsearch-ApplyButton',
+  ];
+
+  for (const sel of applySelectors) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) { await btn.click(); console.log('  Clicked Apply'); await delay(3000); break; }
+    } catch (e) {}
+  }
+
+  // Indeed may redirect to external or show its own form
+  const isIndeedApply = await page.$('.ia-FormFields, .ia-questions, [data-testid="apply-form"]');
+  if (!isIndeedApply && page.url().includes('indeed.com') === false) {
+    console.log('  Redirected to external site: ' + page.url());
+    return await navigateWizard(page, outDir, opts);
+  }
+
+  // Use wizard handler
+  return await navigateWizard(page, outDir, opts);
+}
+
+// ── MAIN ──
+async function main() {
+  const opts = parseArgs();
+  const platform = detectPlatform(opts.url);
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const outDir = path.join(ROOT, 'output', dateStr + '-apply-' + platform);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Determine which browser profile to use
+  let profileDir;
+  if (platform === 'linkedin') profileDir = path.join(ROOT, 'profiles', 'linkedin');
+  else if (platform === 'indeed') profileDir = path.join(ROOT, 'profiles', 'indeed');
+  else profileDir = path.join(ROOT, 'profiles', 'generic');
+
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  console.log('\n=== AUTO-APPLY ===');
+  console.log('Platform: ' + platform);
+  console.log('URL: ' + opts.url);
+  console.log('Resume: ' + (opts.resume || '(none)'));
+  console.log('Profile: ' + profileDir);
+  if (opts.email) console.log('Account email: ' + opts.email);
+  console.log('Output: ' + outDir);
+
+  const browser = await chromium.launchPersistentContext(profileDir, {
+    headless: opts.headless,
+    viewport: { width: 1280, height: 900 },
+    args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+  });
+
+  const page = await browser.newPage();
+  page.setDefaultTimeout(30000);
+
+  let result;
+  try {
+    console.log('\n  Navigating to job posting...');
+    await page.goto(opts.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await delay(3000);
+    await screenshot(page, outDir, '01-landing');
+
+    // Check for account creation / login on the landing page
+    const accountResult = await checkAccountCreation(page, browser, opts);
+    if (accountResult && accountResult.status === 'account_created') {
+      await delay(3000);
+      await screenshot(page, outDir, '02-after-account');
+    }
+
+    // Find and click the Apply button (external sites usually have one)
+    if (platform !== 'linkedin' && platform !== 'indeed') {
+      // First check if the current page is already the Workday apply page
+      const pageUrl = page.url();
+      const pageText = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 500) : '');
+      const isAlreadyWorkdayApply = pageUrl.includes('myworkdayjobs.com') && pageText.includes('Start Your Application');
+
+      if (isAlreadyWorkdayApply) {
+        console.log('  Already on Workday apply page. Starting application...');
+        // Accept cookies if present
+        const cookieBtn = await page.$('button:has-text("Accept Cookies"), button:has-text("Accept"), #onetrust-accept-btn-handler');
+        if (cookieBtn) { await cookieBtn.click(); await delay(2000); }
+        
+        // Click Apply Manually to skip resume autofill
+        const applyManual = await page.$('a:has-text("Apply Manually"), button:has-text("Apply Manually"), [data-automation-id*="applyManually"]');
+        if (applyManual) { await applyManual.click({ force: true }); console.log('  Clicked Apply Manually'); await delay(4000); }
+        
+        // Now we should be on the account creation page — fill it directly
+        console.log('  Filling Workday account creation form...');
+        const emailInput = await page.$('[data-automation-id="email"], input[type="text"][data-automation-id="email"]');
+        if (emailInput) {
+          // Use fresh email with timestamp to avoid duplicate account errors
+          const freshEmail = (opts.email || 'test@gmail.com').replace('@', '+wd' + Date.now() + '@');
+          await emailInput.click({ clickCount: 3 });
+          await emailInput.fill(freshEmail);
+          console.log('  Filled email: ' + freshEmail);
+          await page.fill('[data-automation-id="password"]', opts.password || 'Test1234!').catch(() => {});
+          await page.fill('[data-automation-id="verifyPassword"]', opts.password || 'Test1234!').catch(() => {});
+          console.log('  Filled password + verify');
+          await delay(1000);
+          
+          // Click Create Account with force (bypasses Workday overlay)
+          const createBtn = await page.$('[data-automation-id="createAccountSubmitButton"], button:has-text("Create Account")');
+          if (createBtn) {
+            await createBtn.click({ force: true }).catch(async () => {
+              await page.evaluate(() => { const b = document.querySelector('[data-automation-id="createAccountSubmitButton"]'); if (b) b.click(); });
+            });
+            console.log('  Clicked Create Account (force)');
+            await delay(5000);
+          }
+          
+          // Check if email verification is needed
+          const afterText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+          const needsVerification = afterText.includes('verification') || afterText.includes('verify') || afterText.includes('check your email') || afterText.includes('code');
+          
+          if (needsVerification) {
+            console.log('  *** EMAIL VERIFICATION REQUIRED ***');
+            const emailCreds = PROFILE.emailCredentials || {};
+            if (emailCreds.appPassword) {
+              console.log('  Auto-reading verification email via IMAP...');
+              try {
+                const { fetchEmails } = require('./email-reader.js');
+                // Wait a few seconds for the email to arrive
+                await delay(5000);
+                const emails = await fetchEmails({ email: emailCreds.email, password: emailCreds.appPassword, since: 5 });
+                const verifyEmails = emails.filter(e => {
+                  const t = (e.subject + ' ' + e.preview).toLowerCase();
+                  return t.includes('verify') || t.includes('code') || t.includes('workday') || t.includes('confirm') || t.includes('activate') || e.codes.length > 0 || e.links.length > 0;
+                }).sort((a, b) => new Date(b.date) - new Date(a.date));
+                
+                if (verifyEmails.length > 0) {
+                  const email = verifyEmails[0];
+                  console.log('  Found verification email: ' + email.subject);
+                  console.log('  Codes: ' + JSON.stringify(email.codes) + ', Links: ' + email.links.length);
+                  
+                  if (email.links && email.links.length > 0) {
+                    const link = email.links.filter(l => !l.includes('unsubscribe') && !l.includes('privacy')).pop() || email.links[0];
+                    console.log('  Opening verification link: ' + link.slice(0, 100));
+                    await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await delay(3000);
+                    console.log('  Verification link opened');
+                  } else if (email.codes && email.codes.length > 0) {
+                    console.log('  Entering verification code: ' + email.codes[0]);
+                    await enterVerificationCode(page, email.codes[0]);
+                  }
+                } else {
+                  // Retry after 30s
+                  console.log('  No verification email yet. Waiting 30s and retrying...');
+                  await delay(30000);
+                  const retry = await fetchEmails({ email: emailCreds.email, password: emailCreds.appPassword, since: 10 });
+                  const retryVerify = retry.filter(e => {
+                    const t = (e.subject + ' ' + e.preview).toLowerCase();
+                    return t.includes('verify') || t.includes('code') || t.includes('workday') || e.codes.length > 0 || e.links.length > 0;
+                  }).sort((a, b) => new Date(b.date) - new Date(a.date));
+                  if (retryVerify.length > 0) {
+                    console.log('  Found on retry: ' + retryVerify[0].subject);
+                    if (retryVerify[0].links && retryVerify[0].links.length > 0) {
+                      const link = retryVerify[0].links.filter(l => !l.includes('unsubscribe')).pop();
+                      if (link) { await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 }); await delay(3000); }
+                    } else if (retryVerify[0].codes && retryVerify[0].codes.length > 0) {
+                      await enterVerificationCode(page, retryVerify[0].codes[0]);
+                    }
+                  } else {
+                    console.log('  No verification email found after retry.');
+                  }
+                }
+              } catch (e) {
+                console.log('  IMAP error: ' + e.message);
+              }
+            } else {
+              console.log('  No IMAP appPassword configured. Cannot auto-read.');
+            }
+          }
+        }
+        
+        // Run the universal wizard for the remaining steps
+        result = await navigateWizard(page, outDir, opts);
+      } else {
+        const applySelectors = [
+          'a:has-text("Apply Now")','a:has-text("Apply")','button:has-text("Apply Now")','button:has-text("Apply")',
+          'a[href*="apply"]','button:has-text("Start Application")',
+          'button:has-text("Apply for this job")','button:has-text("Apply for job")',
+          'input[type="button"][value*="Apply"]','input[type="submit"][value*="Apply"]',
+        ];
+        let clicked = false;
+        for (const sel of applySelectors) {
+          try {
+            const btn = await page.$(sel);
+            if (btn) {
+              // Check if it's a link to a Workday URL — navigate directly instead of clicking
+              const href = await btn.getAttribute('href');
+              if (href && href.includes('myworkdayjobs.com')) {
+                console.log('  Found Workday apply link: ' + href.slice(0, 100));
+                await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await delay(4000);
+                
+                // Handle Workday apply page — cookies, Apply Manually, account creation, then wizard
+                const wdCookieBtn = await page.$('button:has-text("Accept Cookies"), button:has-text("Accept"), #onetrust-accept-btn-handler');
+                if (wdCookieBtn) { await wdCookieBtn.click(); await delay(2000); }
+                
+                const wdApplyManual = await page.$('a:has-text("Apply Manually"), button:has-text("Apply Manually"), [data-automation-id*="applyManually"]');
+                if (wdApplyManual) { await wdApplyManual.click({ force: true }); console.log('  Clicked Apply Manually'); await delay(4000); }
+                
+                // Fill account creation form
+                console.log('  Filling Workday account creation form...');
+                const wdEmailInput = await page.$('[data-automation-id="email"], input[type="text"][data-automation-id="email"]');
+                if (wdEmailInput) {
+                  const freshEmail = (opts.email || 'test@gmail.com').replace('@', '+wd' + Date.now() + '@');
+                  await wdEmailInput.click({ clickCount: 3 });
+                  await wdEmailInput.fill(freshEmail);
+                  console.log('  Filled email: ' + freshEmail);
+                  await page.fill('[data-automation-id="password"]', opts.password || 'Test1234!').catch(() => {});
+                  await page.fill('[data-automation-id="verifyPassword"]', opts.password || 'Test1234!').catch(() => {});
+                  console.log('  Filled password + verify');
+                  await delay(1000);
+                  
+                  const wdCreateBtn = await page.$('[data-automation-id="createAccountSubmitButton"], button:has-text("Create Account")');
+                  if (wdCreateBtn) {
+                    await wdCreateBtn.click({ force: true }).catch(async () => {
+                      await page.evaluate(() => { const b = document.querySelector('[data-automation-id="createAccountSubmitButton"]'); if (b) b.click(); });
+                    });
+                    console.log('  Clicked Create Account (force)');
+                    await delay(5000);
+                  }
+                  
+                  // Check for email verification
+                  const wdAfterText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
+                  const wdNeedsVerification = wdAfterText.includes('verification') || wdAfterText.includes('verify') || wdAfterText.includes('check your email') || wdAfterText.includes('code');
+                  if (wdNeedsVerification) {
+                    console.log('  *** EMAIL VERIFICATION REQUIRED ***');
+                    const emailCreds = PROFILE.emailCredentials || {};
+                    if (emailCreds.appPassword) {
+                      console.log('  Auto-reading verification email via IMAP...');
+                      try {
+                        const { fetchEmails } = require('./email-reader.js');
+                        await delay(5000);
+                        const emails = await fetchEmails({ email: emailCreds.email, password: emailCreds.appPassword, since: 5 });
+                        const verifyEmails = emails.filter(e => {
+                          const t = (e.subject + ' ' + e.preview).toLowerCase();
+                          return t.includes('verify') || t.includes('code') || t.includes('workday') || t.includes('confirm') || e.codes.length > 0 || e.links.length > 0;
+                        }).sort((a, b) => new Date(b.date) - new Date(a.date));
+                        if (verifyEmails.length > 0) {
+                          const email = verifyEmails[0];
+                          console.log('  Found verification email: ' + email.subject);
+                          if (email.links && email.links.length > 0) {
+                            const link = email.links.filter(l => !l.includes('unsubscribe') && !l.includes('privacy')).pop() || email.links[0];
+                            console.log('  Opening verification link: ' + link.slice(0, 100));
+                            await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                            await delay(3000);
+                          } else if (email.codes && email.codes.length > 0) {
+                            console.log('  Entering verification code: ' + email.codes[0]);
+                            await enterVerificationCode(page, email.codes[0]);
+                          }
+                        } else {
+                          console.log('  No verification email found yet. Waiting 30s...');
+                          await delay(30000);
+                          const retry = await fetchEmails({ email: emailCreds.email, password: emailCreds.appPassword, since: 10 });
+                          const retryVerify = retry.filter(e => {
+                            const t = (e.subject + ' ' + e.preview).toLowerCase();
+                            return t.includes('verify') || t.includes('code') || t.includes('workday') || e.codes.length > 0 || e.links.length > 0;
+                          }).sort((a, b) => new Date(b.date) - new Date(a.date));
+                          if (retryVerify.length > 0) {
+                            console.log('  Found on retry: ' + retryVerify[0].subject);
+                            if (retryVerify[0].links && retryVerify[0].links.length > 0) {
+                              const link = retryVerify[0].links.filter(l => !l.includes('unsubscribe')).pop();
+                              if (link) { await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 30000 }); await delay(3000); }
+                            } else if (retryVerify[0].codes && retryVerify[0].codes.length > 0) {
+                              await enterVerificationCode(page, retryVerify[0].codes[0]);
+                            }
+                          } else {
+                            console.log('  No verification email found after retry.');
+                          }
+                        }
+                      } catch (e) {
+                        console.log('  IMAP error: ' + e.message);
+                      }
+                    } else {
+                      console.log('  No IMAP appPassword configured. Cannot auto-read.');
+                    }
+                  }
+                }
+                
+                // Run the wizard for the remaining steps
+                result = await navigateWizard(page, outDir, opts);
+                clicked = true;
+                break;
+              }
+              await btn.click({ force: true });
+              console.log('  Clicked Apply button: ' + sel);
+              clicked = true;
+              await delay(4000);
+              break;
+            }
+          } catch (e) {}
+        }
+
+        if (clicked) {
+        // Check for account creation again after clicking apply
+        const accountResult2 = await checkAccountCreation(page, browser, opts);
+        if (accountResult2 && accountResult2.status === 'account_created') {
+          await delay(3000);
+        }
+        // Run the universal wizard
+        result = await navigateWizard(page, outDir, opts);
+      } else {
+        // No apply button found — maybe the form is already on the page
+        console.log('  No explicit Apply button. Looking for application form on page...');
+        const hasForm = await page.$('input[type="text"], input[type="email"], textarea, select');
+        if (hasForm) {
+          result = await navigateWizard(page, outDir, opts);
+        } else {
+          console.log('  Could not find application form or apply button.');
+          await screenshot(page, outDir, 'no-form-found');
+          result = { status: 'no_form_found' };
+        }
+      }
+      } // end of else (not already on workday)
+    } else if (platform === 'linkedin') {
+      result = await applyLinkedIn(page, opts, outDir);
+    } else if (platform === 'indeed') {
+      result = await applyIndeed(page, opts, outDir);
+    }
+
+  } catch (e) {
+    console.error('  Error: ' + e.message);
+    await screenshot(page, outDir, 'error');
+    result = { status: 'error', error: e.message };
+  }
+
+  // Save result
+  const resultPath = path.join(outDir, 'result.json');
+  fs.writeFileSync(resultPath, JSON.stringify({
+    platform, url: opts.url, resume: opts.resume,
+    timestamp: new Date().toISOString(), ...result,
+  }, null, 2));
+
+  console.log('\n=== RESULT ===');
+  console.log('Status: ' + result.status);
+  console.log('Result file: ' + resultPath);
+  console.log('Screenshots: ' + outDir);
+
+  await browser.close();
+}
+
+main().catch(e => { console.error(e); process.exit(1); });
