@@ -26,6 +26,11 @@ const path = require('path');
 
 const ROOT = __dirname;
 const PROFILE = JSON.parse(fs.readFileSync(path.join(ROOT, 'applicant-profile.json'), 'utf-8'));
+// Master resume — used as grounding context when the LLM answers screening questions.
+const RESUME_NAME = PROFILE.activeResume || 'example';
+const MASTER = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'master-resumes', RESUME_NAME + '.json'), 'utf-8')); } catch { return {}; } })();
+const OLLAMA_MODEL = 'gemma4:latest'; // keep in sync with tailor.js
+const _answerCache = new Map();       // question → answer, avoids re-asking on page re-renders
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -1434,9 +1439,88 @@ async function answerUnfilledRadios(page) {
 // inputs with a best-effort value so the required-field gate doesn't block submit.
 // ponytail: only fills confident numeric/short cases (maxlength<=20, number type, or rating/experience
 // wording). Leaves genuine long-form essays blank → stuck-detection then pauses for manual.
+// Minimal Ollama call for short answers (apply.js has no LLM client of its own).
+// ponytail: num_predict must be generous — gemma4 is a reasoning model that spends ~200
+// tokens thinking before it emits the answer; a small cap returns an empty response.
+function callOllamaShort(prompt) {
+  const http = require('http');
+  const body = JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false, options: { temperature: 0.2, num_predict: 800 } });
+  return new Promise((resolve, reject) => {
+    const req = http.request('http://localhost:11434/api/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout: 60000,
+    }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d).response || ''); } catch (e) { reject(e); } }); });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('ollama timeout')); });
+    req.write(body); req.end();
+  });
+}
+
+// One-time applicant background block the LLM uses to answer truthfully.
+function applicantBackground() {
+  const id = PROFILE.identity || {};
+  const jp = PROFILE.jobPreferences || {};
+  const wa = PROFILE.workAuthorization || {};
+  return [
+    'Name: ' + (id.firstName || '') + ' ' + (id.lastName || ''),
+    'Current title: ' + (MASTER.title || ''),
+    'Location: ' + (id.city || '') + ', ' + (id.state || ''),
+    'Total years of professional experience: ' + (jp.experienceYears != null ? jp.experienceYears : ''),
+    'Skills: ' + (MASTER.skills || []).join(', '),
+    'Work history: ' + (MASTER.workHistory || []).map(w => `${w.title} at ${w.company} (${w.dates})`).join('; '),
+    'Authorized to work in the US: ' + (wa.authorized === false ? 'no' : 'yes'),
+    'Requires visa sponsorship: ' + (wa.requiresSponsorship ? 'yes' : 'no'),
+    'Willing to relocate: ' + (jp.willingToRelocate ? 'yes' : 'no'),
+    'Desired salary: ' + (jp.salaryExpectation || ''),
+  ].join('\n');
+}
+
+// Answer ONE screening question with the local LLM, grounded in real background.
+// choices: array of allowed answers (radio/select) → the model must pick one verbatim.
+async function answerScreeningQuestion(question, opts = {}) {
+  const { type = 'text', maxlen = 0, choices = null } = opts;
+  const key = question + '||' + (choices ? choices.join('|') : type + ':' + maxlen);
+  if (_answerCache.has(key)) return _answerCache.get(key);
+
+  const qlc = question.toLowerCase();
+  let format;
+  if (choices && choices.length) format = 'Reply with EXACTLY one of these options copied verbatim: ' + choices.map(c => `"${c}"`).join(', ') + '.';
+  else if (type === 'number' || /\b0\s*=|scale|0-10|0 to 10|rate your|how would you rate|how familiar/.test(qlc)) format = 'Reply with a single integer. Use the scale in the question (default 0-10). If it asks about experience not in the background, reply 0.';
+  else if (maxlen && maxlen <= 20) format = `Reply with a number or 1-3 words (max ${maxlen} characters).`;
+  else format = 'Reply in one short sentence.';
+
+  const prompt = `Answer this job application question truthfully AS THE APPLICANT, using ONLY the background below. Never claim experience that is not listed.
+
+BACKGROUND
+${applicantBackground()}
+
+QUESTION
+${question}
+
+${format}
+Output ONLY the answer text — no label, no quotes, no explanation.`;
+
+  let ans = '';
+  try {
+    const raw = await callOllamaShort(prompt);
+    ans = (raw || '').trim().replace(/^["'`]+|["'`]+$/g, '').split('\n')[0].trim();
+    if (choices && choices.length) {
+      const lc = ans.toLowerCase();
+      ans = choices.find(c => c.toLowerCase() === lc) ||
+            choices.find(c => lc.includes(c.toLowerCase()) || c.toLowerCase().includes(lc)) || '';
+    }
+    if (maxlen && ans.length > maxlen) ans = ans.slice(0, maxlen);
+  } catch (e) { ans = ''; }
+  _answerCache.set(key, ans);
+  return ans;
+}
+
+// Fill free-text screening questions. LLM-first (reads each question, answers from real
+// background); small heuristic fallback only if Ollama is unavailable.
 async function fillTextScreeningQuestions(page) {
-  const scope = '.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal, form';
-  const inputs = await page.$$(scope + ' input[type="text"], ' + scope + ' input[type="number"], ' + scope + ' input:not([type]), ' + scope + ' textarea').catch(() => []);
+  // Scope to the Easy Apply dialog so we never touch the top-nav search box.
+  const dialog = await page.$('.jobs-easy-apply-modal, [data-test-modal], [role="dialog"], .artdeco-modal').catch(() => null);
+  const root = dialog || page;
+  const inputs = await root.$$('input[type="text"], input[type="number"], input:not([type]), textarea').catch(() => []);
   let filled = 0;
   for (const inp of inputs) {
     try {
@@ -1447,28 +1531,29 @@ async function fillTextScreeningQuestions(page) {
 
       const meta = await page.evaluate(el => {
         const byId = el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
-        const near = el.closest('[data-test-form-element], .fb-dash-form-element, .artdeco-text-input--container, div') || el.parentElement;
+        const near = el.closest('[data-test-form-element], .fb-dash-form-element, .artdeco-text-input--container') || el.parentElement;
         const lbl = byId || (near && near.querySelector('label'));
         return {
-          q: ((el.getAttribute('aria-label') || '') + ' ' + (lbl ? lbl.textContent : '')).toLowerCase().replace(/\s+/g, ' ').trim(),
+          q: ((lbl ? lbl.textContent : '') || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim(),
           maxlen: parseInt(el.getAttribute('maxlength') || '0', 10),
-          isNum: el.getAttribute('type') === 'number',
+          isNum: (el.getAttribute('type') || '') === 'number',
         };
       }, inp);
+      if (!meta.q) continue; // no question context → skip stray inputs
 
-      const q = meta.q;
-      let value = '';
-      // Honesty first: explicit "enter 0 if you have never..." → 0 (don't imply experience we lack)
-      if (/enter 0 if|0 if you (have )?never|if you have never/.test(q)) value = '0';
-      else if (meta.isNum || /\b0\s*=|scale|rate|how would you rate|how familiar|leading industry expert|0-10|0 to 10/.test(q)) value = '8';
-      else if (/how many (years|months)|years of|months of|average|sales cycle|how long|experience.*(years|months)/.test(q)) value = '3';
-      else if (/salary|compensation|desired pay|expected pay|rate expectation/.test(q)) value = String(PROFILE.jobPreferences?.salaryExpectation || '').replace(/[^0-9]/g, '') || '80000';
-      else if (meta.maxlen > 0 && meta.maxlen <= 20) value = '3'; // short numeric-style answer
-      // else: leave blank (long-form) — stuck-detection handles it
-
+      // LLM-first
+      let value = await answerScreeningQuestion(meta.q, { type: meta.isNum ? 'number' : 'text', maxlen: meta.maxlen });
+      // Heuristic fallback if the model gave nothing
+      if (!value) {
+        const q = meta.q.toLowerCase();
+        if (/enter 0 if|if you have never/.test(q)) value = '0';
+        else if (meta.isNum || /\b0\s*=|scale|rate|how familiar|0-10/.test(q)) value = '5';
+        else if (meta.maxlen > 0 && meta.maxlen <= 20) value = '2';
+      }
       if (value) {
         await inp.click({ clickCount: 3 }).catch(() => {});
         await inp.fill(String(value)).catch(() => {});
+        console.log('    Q: "' + meta.q.slice(0, 62) + '" → ' + String(value).slice(0, 40));
         filled++;
         await delay(200);
       }
