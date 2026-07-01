@@ -329,21 +329,21 @@ function getDropdownValue(fieldLabel, profile) {
   const eeo = profile.eeo || {};
 
   if (label.includes('how did you hear') || label.includes('hear about')) return screening.howDidYouHear || 'Indeed';
-  if (label.includes('state') && !label.includes('united')) return id.state || 'Tennessee';
+  if (label.includes('state') && !label.includes('united')) return id.state || '';
   if (label.includes('phone') && label.includes('device')) return id.phoneDeviceType || 'Mobile';
   if (label.includes('country') && label.includes('phone')) return id.phoneCountryCode || 'United States of America (+1)';
   if (label.includes('country') && !label.includes('phone')) return id.country || 'United States of America';
-  if (label.includes('gender') || label.includes('sex')) return eeo.gender || 'Male';
-  if (label.includes('race') || label.includes('ethnic')) return eeo.race || 'White';
-  if (label.includes('veteran')) return eeo.veteran || 'I am not a veteran';
-  if (label.includes('disability')) return eeo.disability || "I don't have a disability";
+  if (label.includes('gender') || label.includes('sex')) return eeo.gender || '';
+  if (label.includes('race') || label.includes('ethnic')) return eeo.race || '';
+  if (label.includes('veteran')) return eeo.veteran || '';
+  if (label.includes('disability')) return eeo.disability || '';
   if (label.includes('employment') && label.includes('type')) return 'Full-time';
   if (label.includes('work') && label.includes('mode')) return 'Remote';
   if (label.includes('source')) return screening.howDidYouHear || 'Indeed';
   if (label.includes('relationship') || label.includes('referral')) return 'No';
   if (label.includes('degree') || label.includes('education')) return "Bachelor's Degree";
-  if (label.includes('experience')) return '3-5 years';
-  if (label.includes('salary') || label.includes('compensation')) return profile.jobPreferences?.salaryExpectation || '60000';
+  if (label.includes('experience')) return '';
+  if (label.includes('salary') || label.includes('compensation')) return profile.jobPreferences?.salaryExpectation || '';
   if (label.includes('authorized') || label.includes('eligible')) return 'Yes';
   if (label.includes('sponsorship') || label.includes('visa')) return 'No';
   if (label.includes('relocate')) return 'No';
@@ -412,7 +412,7 @@ async function applyGreenhouse(page, opts, outDir) {
   // Salary expectations
   const salaryEl = await page.$('input[name*="salary"], textarea[name*="salary"], [aria-label*="salary"]');
   if (salaryEl) {
-    const salary = PROFILE.jobPreferences?.salaryExpectation || '60000';
+    const salary = PROFILE.jobPreferences?.salaryExpectation || '';
     await salaryEl.click({ clickCount: 3 });
     await salaryEl.fill(salary);
     console.log('  Filled salary expectation');
@@ -432,7 +432,7 @@ async function applyGreenhouse(page, opts, outDir) {
         await ta.fill(cover);
         console.log('  Filled: ' + ariaLabel.slice(0, 40));
       } else if (ariaLabel.includes('salary') || name.includes('salary')) {
-        await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '60000');
+        await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '');
         console.log('  Filled salary');
       } else {
         // Generic textarea — fill with a short answer
@@ -600,7 +600,7 @@ async function applyLever(page, opts, outDir) {
       if (v) continue;
       const label = (await ta.getAttribute('aria-label') || await ta.getAttribute('placeholder') || '').toLowerCase();
       if (label.includes('why')) await ta.fill(PROFILE.answers?.['Why this company?'] || 'N/A');
-      else if (label.includes('salary')) await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '60000');
+      else if (label.includes('salary')) await ta.fill(PROFILE.jobPreferences?.salaryExpectation || '');
       else await ta.fill('N/A');
       console.log('  Filled: ' + label.slice(0, 40));
     } catch (e) {}
@@ -1202,14 +1202,14 @@ async function fillScreeningQuestions(page, container) {
 
       // Veteran status
       if (qText.includes('veteran')) {
-        const vetAnswer = eeo.veteran || 'I am not a veteran';
+        const vetAnswer = eeo.veteran || '';
         const radio = await q.$(`label:has-text("${vetAnswer}") input, input[value*="${vetAnswer}" i]`);
         if (radio) { await radio.check(); console.log('    Answered: veteran status'); await delay(300); }
       }
 
       // Disability
       if (qText.includes('disability')) {
-        const disAnswer = eeo.disability || "I don't have a disability";
+        const disAnswer = eeo.disability || '';
         const radio = await q.$(`label:has-text("${disAnswer}") input, input[value*="${disAnswer}" i]`);
         if (radio) { await radio.check(); console.log('    Answered: disability status'); await delay(300); }
       }
@@ -1677,11 +1677,11 @@ async function applyLinkedIn(page, opts, outDir) {
         else if (type === 'email' || label.includes('email')) value = id.email || '';
         else if (label.includes('first')) value = id.firstName || '';
         else if (label.includes('last')) value = id.lastName || '';
-        else if (label.includes('city')) value = id.city || 'Nashville';
-        else if (label.includes('state') || label.includes('province')) value = id.state || 'TN';
-        else if (label.includes('zip') || label.includes('postal')) value = id.postalCode || '37221';
+        else if (label.includes('city')) value = id.city || '';
+        else if (label.includes('state') || label.includes('province')) value = id.state || '';
+        else if (label.includes('zip') || label.includes('postal')) value = id.postalCode || '';
         else if (label.includes('address')) value = id.address1 || id.location || '';
-        else if (label.includes('salary') || label.includes('compensation')) value = PROFILE.jobPreferences?.salaryExpectation || '60000';
+        else if (label.includes('salary') || label.includes('compensation')) value = PROFILE.jobPreferences?.salaryExpectation || '';
         else if (label.includes('linkedin') || label.includes('website')) value = id.linkedinUrl || '';
 
         if (value) {
