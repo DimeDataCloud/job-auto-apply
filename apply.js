@@ -1592,20 +1592,22 @@ async function applyLinkedIn(page, opts, outDir) {
   console.log('  On apply page. Looking for iframe...');
   await delay(3000);
 
-  // Find the apply iframe (LinkedIn wraps the EA form in an iframe on the /apply/ page)
+  // Find the apply iframe — skip preload/analytics frames, look for one with actual form content
   let applyFrame = null;
   for (const frame of page.frames()) {
     const frameUrl = frame.url();
-    if (frame !== page.mainFrame() && (frameUrl.includes('linkedin.com') || frameUrl.startsWith('https://'))) {
+    if (frame === page.mainFrame()) continue;
+    if (frameUrl.includes('preload') || frameUrl.includes('analytics') || frameUrl === 'about:blank') continue;
+    if (frameUrl.includes('linkedin.com')) {
       applyFrame = frame;
       console.log('  Found apply iframe: ' + frameUrl.slice(0, 80));
       break;
     }
   }
 
-  // If no iframe, the form is directly on the apply page — use the wizard
+  // LinkedIn EA form is usually directly on the /apply/ page, not in an iframe
   if (!applyFrame) {
-    console.log('  No iframe — using wizard on apply page directly');
+    console.log('  No content iframe — form is on main page, using wizard');
     return await navigateWizard(page, outDir, opts);
   }
 
