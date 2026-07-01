@@ -1494,18 +1494,22 @@ async function applyLinkedIn(page, opts, outDir) {
     return { status: 'not_logged_in' };
   }
 
-  // Wait for the Easy Apply button to render (it's lazy-loaded by LinkedIn's SPA)
-  await page.waitForSelector(
-    'button[aria-label*="apply" i], button[aria-label*="আবেদন"], button[aria-label*="bewerben"], button[aria-label*="postular"]',
-    { timeout: 8000 }
-  ).catch(() => {});
+  // Dismiss any overlay modals blocking the Apply button (cookie/notification prompts)
+  const dismissBtns = await page.$$('button[aria-label="Dismiss"], button.modal__dismiss').catch(() => []);
+  for (const db of dismissBtns) {
+    try {
+      const vis = await db.isVisible().catch(() => false);
+      if (vis) { await db.click({ force: true }); await delay(500); }
+    } catch (e) {}
+  }
 
-  // Find Easy Apply button — use CSS class selectors (language-neutral) + English text
+  // Find Easy Apply / Apply button — use force:true since overlays may still partially block
   const easyApplySelectors = [
-    'button.jobs-apply-button','button[class*="jobs-apply"]','.jobs-s-apply button',
+    'button.jobs-apply-button', 'button[class*="jobs-apply"]', '.jobs-s-apply button',
     'button.jobs-apply-button--top-card',
-    'button:has-text("Easy Apply")','button[aria-label*="Easy Apply"]',
-    'button[class*="apply"][class*="button"]',
+    'button:has-text("Easy Apply")', 'button[aria-label*="Easy Apply"]',
+    'button[class*="apply"][class*="button"]',  // matches apply-button class
+    'button.apply-button',
   ];
 
   let eaClicked = false;
@@ -1513,10 +1517,8 @@ async function applyLinkedIn(page, opts, outDir) {
     try {
       const btn = await page.$(sel);
       if (btn) {
-        const visible = await btn.isVisible().catch(() => true);
-        if (!visible) continue;
-        await btn.click();
-        console.log('  Clicked Easy Apply (' + sel + ')');
+        await btn.click({ force: true });
+        console.log('  Clicked Apply button (' + sel + ')');
         eaClicked = true;
         await delay(3000);
         break;
@@ -1536,10 +1538,8 @@ async function applyLinkedIn(page, opts, outDir) {
           ariaLower.includes('postular') || ariaLower.includes('candidater') ||
           ariaLower.includes('応募') || ariaLower.includes('지원') || ariaLower.includes('申请');
         if (!isApply) continue;
-        const visible = await btn.isVisible().catch(() => false);
-        if (!visible) continue;
-        await btn.click();
-        console.log('  Clicked Easy Apply (aria fallback): aria="' + aria.slice(0, 40) + '"');
+        await btn.click({ force: true });
+        console.log('  Clicked Apply (aria fallback): aria="' + aria.slice(0, 40) + '"');
         eaClicked = true;
         await delay(3000);
         break;
