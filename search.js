@@ -89,8 +89,8 @@ async function searchLinkedIn(context, keywords, location, maxResults) {
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await delay(3000);
 
-  // Check if logged in
-  const loginCheck = await page.$('input[name="session_key"], .sign-in-form, .authwall');
+  // Check if logged in — :visible matters, hidden session_key input exists on every page (pitfall)
+  const loginCheck = await page.$('input[name="session_key"]:visible, .sign-in-form:visible, .authwall');
   if (loginCheck) {
     console.log('  [LinkedIn] NOT LOGGED IN. Run: node login.js --board linkedin');
     await page.close();
@@ -292,6 +292,15 @@ async function main() {
     await browser.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
+
+    // ponytail: OneDrive corrupts the persistent profile, so inject saved cookies —
+    // same as apply.js. Without this, search runs as a logged-out guest.
+    const cookiePath = path.join(profileDir, 'session-cookies.json');
+    if (fs.existsSync(cookiePath)) {
+      const savedCookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
+      await browser.addCookies(savedCookies).catch(() => {});
+      console.log('  Loaded ' + savedCookies.length + ' session cookies');
+    }
 
     try {
       // Search for each location
