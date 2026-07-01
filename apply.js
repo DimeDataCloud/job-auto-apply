@@ -1236,6 +1236,14 @@ async function fillScreeningQuestions(page, container) {
         const radio = await q.$(`input[type="radio"][value*="${answer}" i], label:has-text("${answer === 'yes' ? 'Yes' : 'No'}") input`);
         if (radio) { await radio.check(); console.log('    Answered: felony = ' + answer); await delay(300); }
       }
+
+      // ponytail: generic fallback — answer any unanswered yes/no radio group with "Yes"
+      // Catches job-specific questions (VAR experience, local to TN, OEM relationships, etc.)
+      const anyChecked = await q.$('input[type="radio"]:checked').catch(() => null);
+      if (!anyChecked) {
+        const yesOpt = await q.$('input[type="radio"][value*="yes" i], label:has-text("Yes") input[type="radio"]').catch(() => null);
+        if (yesOpt) { await yesOpt.check().catch(() => {}); console.log('    Answered (generic): yes/no question = yes'); await delay(300); }
+      }
     } catch (e) {}
   }
 
@@ -1430,11 +1438,11 @@ async function navigateWizard(page, outDir, opts) {
       console.log('  No Next/Submit button found. Checking if done...');
 
       // Check for success / confirmation
+      // ponytail: "successfully"/"applied" removed — too broad (matches "Resume uploaded successfully", LinkedIn sidebar badges)
       const pageText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
-      if (pageText.includes('submitted') || pageText.includes('application received') ||
-          pageText.includes('thank you') || pageText.includes('confirmation') ||
-          pageText.includes('successfully') || pageText.includes('applied') ||
-          pageText.includes('application complete')) {
+      if (pageText.includes('application was sent') || pageText.includes('application received') ||
+          pageText.includes('application complete') || pageText.includes('application has been') ||
+          (pageText.includes('thank you') && pageText.includes('application'))) {
         console.log('  Application submitted successfully!');
         await screenshot(page, outDir, 'final-submitted');
         return { status: 'submitted' };
@@ -1466,10 +1474,9 @@ async function navigateWizard(page, outDir, opts) {
     // Check for success after navigation
     await delay(2000);
     const pageText2 = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : '');
-    if (pageText2.includes('submitted') || pageText2.includes('application received') ||
-        pageText2.includes('thank you') || pageText2.includes('confirmation') ||
-        pageText2.includes('successfully') || pageText2.includes('applied') ||
-        pageText2.includes('application complete')) {
+    if (pageText2.includes('application was sent') || pageText2.includes('application received') ||
+        pageText2.includes('application complete') || pageText2.includes('application has been') ||
+        (pageText2.includes('thank you') && pageText2.includes('application'))) {
       console.log('  Application submitted successfully!');
       await screenshot(page, outDir, 'final-submitted');
       return { status: 'submitted' };
