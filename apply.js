@@ -1766,6 +1766,14 @@ async function main() {
     args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
   });
 
+  // Inject saved session cookies so LinkedIn recognizes the session even after bot detection clears them
+  const cookiePath = path.join(profileDir, 'session-cookies.json');
+  if (fs.existsSync(cookiePath)) {
+    const savedCookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
+    await browser.addCookies(savedCookies).catch(() => {});
+    console.log('  Loaded ' + savedCookies.length + ' session cookies');
+  }
+
   const page = await browser.newPage();
   page.setDefaultTimeout(30000);
 
