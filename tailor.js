@@ -100,7 +100,7 @@ JSON schema:
 {"title":"tailored headline","summary":"2-3 sentence summary","bullets":["bullets for job 1 (newline-separated)","bullets for job 2","bullets for job 3"],"skills":["skill1","skill2","..."]}
 
 Target Job: ${jobTitle} at ${companyName}
-Job Description: ${jdText.slice(0, 2000)}
+Job Description: ${jdText.slice(0, 3000)}
 
 Current Resume:
 Name: ${master.name}
@@ -111,11 +111,12 @@ Work History:
 ${workHistoryStr}
 
 Rules:
-- Rewrite the summary to align with the target job
+- Rewrite the summary to align with the target job — use SPECIFIC industry keywords from the JD (e.g. if JD says "healthcare BPO" and "revenue cycle management", use those exact terms)
 - Rewrite each job's bullets to emphasize relevance to the target job, but keep them truthful
-- DO NOT include any numbers, metrics, percentages, dollar amounts, or quantified statistics anywhere in the resume — EXCEPT for dates (e.g. "Oct 2025", "2024", "3,000-5,000 viewers" is NOT allowed). No fabricated metrics. No "doubled revenue by 40%" or "closed $2M in deals". Only use qualitative descriptions.
+- Match the JD's specific terminology and industry language — don't use generic sales terms when the JD asks for specific domain expertise
+- DO NOT include any numbers, metrics, percentages, dollar amounts, or quantified statistics anywhere in the resume — EXCEPT for dates. No fabricated metrics.
 - The bullets array must have exactly ${master.workHistory.length} strings, one per job, each containing 3-4 bullet points separated by newlines
-- Reorder skills to put job-relevant first. Include ALL original skills. Add at most 1-2 new ones from the JD.
+- Reorder skills to put job-relevant first. Include ALL original skills. Add at most 1-2 new ones from the JD's specific keywords.
 - Output ONLY the JSON`;
 }
 

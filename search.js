@@ -116,15 +116,32 @@ async function searchLinkedIn(context, keywords, location, maxResults) {
       const jobId = el.getAttribute('data-job-id') || (el.querySelector('[data-job-id]') || {}).getAttribute?.('data-job-id') ||
         (linkEl && linkEl.href ? linkEl.href.match(/\/jobs\/view\/(\d+)/)?.[1] : null);
 
-      // Check for Easy Apply indicator
+      // Check for Easy Apply indicator — try CSS class first, then aria-label, then text content
       const easyApplyEl = el.querySelector('.job-search-card__easy-apply, [class*="easy-apply"]');
+      const easyApplyBtn = el.querySelector('[aria-label*="Easy Apply" i], button[aria-label*="apply" i]');
+      const easyApplyText = el.textContent && el.textContent.includes('Easy Apply');
+
+      // Extract salary from job card if present (e.g. "$100K/yr - $120K/yr")
+      const salaryEl = el.querySelector('[class*="salary"], [class*="compensation"]');
+      let salary = '';
+      if (salaryEl) {
+        salary = salaryEl.textContent.trim();
+      } else if (el.textContent) {
+        const salaryMatch = el.textContent.match(/\$[\d,]+K?\/yr[\s\S]{0,30}?(?:-|\s+to\s+)\$[\d,]+K?\/yr/i);
+        if (salaryMatch) salary = salaryMatch[0].trim();
+      }
+
+      // Clean title — strip duplicate text from nested elements and "with verification" badge
+      let cleanTitle = titleEl ? titleEl.textContent.trim() : '';
+      cleanTitle = cleanTitle.split('\n')[0].trim().replace(/\s*with verification\s*/i, '').trim();
 
       return {
-        title: titleEl ? titleEl.textContent.trim() : '',
+        title: cleanTitle,
         company: companyEl ? companyEl.textContent.trim() : '',
         location: locationEl ? locationEl.textContent.trim() : '',
         url: jobId ? 'https://www.linkedin.com/jobs/view/' + jobId + '/' : '',
-        easyApply: !!easyApplyEl
+        easyApply: !!(easyApplyEl || easyApplyBtn || easyApplyText),
+        salary: salary
       };
     }).filter(j => j.title && j.url);
   });

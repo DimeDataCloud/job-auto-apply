@@ -88,10 +88,51 @@ function scoreFit(jdText) {
   const jdLower = jdText.toLowerCase();
   const roleMatches = roleKeywords.filter(k => jdLower.includes(k));
 
+  // ── REQUIREMENTS PENALTY ──
+  // Check JD required years of experience vs profile experience
+  // e.g. "Minimum 5 years of B2B sales experience" → require 5, profile has 3 → penalty
+  const profileYears = PROFILE.jobPreferences?.experienceYears || 0;
+  const reqYearsMatch = jdText.match(/(?:minimum|min\.?|at least)\s+(\d+)\s*(?:\+?\s*)?years?\s*(?:of\s+)?(?:b2b\s+)?(?:sales\s+)?experience/i);
+  let reqYears = 0;
+  let yearsPenalty = 0;
+  if (reqYearsMatch) {
+    reqYears = parseInt(reqYearsMatch[1]);
+    if (profileYears > 0 && profileYears < reqYears) {
+      yearsPenalty = -15 * (reqYears - profileYears) / reqYears;
+      yearsPenalty = Math.max(yearsPenalty, -20); // cap at -20
+    }
+  }
+
+  // Check for required industry experience that the profile doesn't have
+  // e.g. "3 years of healthcare BPO experience" → if resume doesn't mention healthcare/BPO → penalty
+  const industryReqMatch = jdText.match(/(\d+)\s*\+?\s*years?\s*(?:of\s+)?experience\s*(?:in|within|with)\s+(?:the\s+)?(\w+(?:\s+\w+){0,3})/i);
+  let industryPenalty = 0;
+  let requiredIndustry = '';
+  if (industryReqMatch) {
+    requiredIndustry = industryReqMatch[2].toLowerCase().trim();
+    // Check if resume/profile mentions this industry
+    const profileText = (resumeText + ' ' + JSON.stringify(PROFILE).toLowerCase()).toLowerCase();
+    const industryWords = requiredIndustry.split(/\s+/).filter(w => w.length > 3);
+    const hasIndustryMatch = industryWords.some(w => profileText.includes(w));
+    if (!hasIndustryMatch && industryWords.length > 0) {
+      industryPenalty = -10;
+    }
+  }
+
+  // ── SALARY MATCH BONUS ──
+  // If JD mentions salary and it meets minimum, add bonus
+  let salaryBonus = 0;
+  const salaryMatch = jdText.match(/\$([\d,]+)k?\s*(?:\/yr)?\s*(?:-|to)\s*\$([\d,]+)k?\s*(?:\/yr)?/i);
+  if (salaryMatch) {
+    const minSalaryInJD = parseInt(salaryMatch[1].replace(/,/g, '')) * (salaryMatch[1].includes('K') || salaryMatch[1].length <= 3 ? 1000 : 1);
+    const profileMin = PROFILE.jobPreferences?.minSalary || 0;
+    if (minSalaryInJD >= profileMin) salaryBonus = 5;
+  }
+
   const keywordScore = Math.min(overlap.length / 15 * 40, 40);
   const skillScore = Math.min(skillMatches.length / 5 * 25, 25);
   const roleScore = Math.min(roleMatches.length / 4 * 35, 35);
-  const total = Math.round(keywordScore + skillScore + roleScore);
+  const total = Math.max(0, Math.round(keywordScore + skillScore + roleScore + yearsPenalty + industryPenalty + salaryBonus));
 
   let verdict = 'LOW';
   if (total >= 70) verdict = 'HIGH';
@@ -100,11 +141,24 @@ function scoreFit(jdText) {
   return {
     score: total,
     verdict,
-    breakdown: { keywordOverlap: Math.round(keywordScore), skillMatch: Math.round(skillScore), roleMatch: Math.round(roleScore) },
+    breakdown: {
+      keywordOverlap: Math.round(keywordScore),
+      skillMatch: Math.round(skillScore),
+      roleMatch: Math.round(roleScore),
+      requirementsPenalty: Math.round(yearsPenalty + industryPenalty),
+      salaryBonus: salaryBonus,
+    },
     matchedKeywords: overlap.slice(0, 20),
     matchedSkills: skillMatches,
     roleMatches,
     topJdKeywords: jdKeywords.slice(0, 20).map(k => k.word),
+    requirements: {
+      requiredYears: reqYears,
+      profileYears: profileYears,
+      yearsPenalty: Math.round(yearsPenalty),
+      requiredIndustry: requiredIndustry || '(none)',
+      industryPenalty: Math.round(industryPenalty),
+    },
   };
 }
 
@@ -121,10 +175,20 @@ function printResult(jdText, url) {
   console.log('Score:  ' + result.score + '/100  [' + result.verdict + ']');
   console.log('');
   console.log('Breakdown:');
-  console.log('  Keyword overlap: ' + result.breakdown.keywordOverlap + '/40');
-  console.log('  Skill match:     ' + result.breakdown.skillMatch + '/25');
-  console.log('  Role match:      ' + result.breakdown.roleMatch + '/35');
+  console.log('  Keyword overlap:    ' + result.breakdown.keywordOverlap + '/40');
+  console.log('  Skill match:        ' + result.breakdown.skillMatch + '/25');
+  console.log('  Role match:         ' + result.breakdown.roleMatch + '/35');
+  if (result.breakdown.requirementsPenalty) console.log('  Requirements penalty: ' + result.breakdown.requirementsPenalty);
+  if (result.breakdown.salaryBonus) console.log('  Salary bonus:       +' + result.breakdown.salaryBonus);
   console.log('');
+  if (result.requirements.requiredYears > 0) {
+    console.log('Requirements check:');
+    console.log('  Required: ' + result.requirements.requiredYears + ' years (profile has ' + result.requirements.profileYears + ') → penalty: ' + result.requirements.yearsPenalty);
+    if (result.requirements.requiredIndustry !== '(none)') {
+      console.log('  Required industry: "' + result.requirements.requiredIndustry + '" → penalty: ' + result.requirements.industryPenalty);
+    }
+    console.log('');
+  }
   console.log('Matched keywords:');
   console.log('  ' + (result.matchedKeywords.join(', ') || '(none)'));
   console.log('');
