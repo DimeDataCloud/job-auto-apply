@@ -1551,9 +1551,9 @@ async function fillTextScreeningQuestions(page) {
         const role = (el.getAttribute('role') || '').toLowerCase();
         const ph = (el.getAttribute('placeholder') || '').toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        // Only operate inside the Easy Apply form/modal — NEVER the global nav search box
-        // (filling that React input steals focus and corrupts the last question — see pitfall).
-        const inEA = !!el.closest('.jobs-easy-apply-modal, .artdeco-modal, [role="dialog"], form');
+        // Blacklist the global nav search box — filling that React input steals focus and
+        // corrupts the last question (pitfall). Blacklist, not whitelist: the EA form on the
+        // /apply/ page isn't inside .artdeco-modal, so a whitelist skips the real questions.
         const isSearch = role === 'combobox' || role === 'searchbox' ||
           /search|looking for/.test(ph + ' ' + aria) ||
           !!el.closest('#global-nav, .search-global-typeahead, header, nav');
@@ -1561,10 +1561,10 @@ async function fillTextScreeningQuestions(page) {
           q: ((lbl ? lbl.textContent : '') || aria || ph || '').replace(/\s+/g, ' ').trim(),
           maxlen: parseInt(el.getAttribute('maxlength') || '0', 10),
           isNum: (el.getAttribute('type') || '') === 'number',
-          skip: isSearch || !inEA,
+          skip: isSearch,
         };
       }, inp);
-      if (meta.skip || !meta.q) continue; // skip nav search / stray inputs outside the EA form
+      if (meta.skip || !meta.q) continue; // skip nav search / stray inputs without a question
 
       // LLM-first
       let value = await answerScreeningQuestion(meta.q, { type: meta.isNum ? 'number' : 'text', maxlen: meta.maxlen });
