@@ -208,7 +208,7 @@ ${bulletLines}
   body { font-family: 'Inter', Arial, sans-serif; background: #dde3eb; display: flex; justify-content: center; padding: 36px 20px; }
   /* --base drives every size (fonts + spacing in em). tailor.js auto-fits it so content fills
      exactly one Letter page (816x1056px) — no dead space, no overflow to a 2nd page. */
-  .resume { display: flex; width: 816px; height: 1056px; overflow: hidden; background: #ffffff; box-shadow: 0 10px 50px rgba(0,0,0,0.2); border-top: 5px solid #0076CE; font-size: var(--base, 10px); }
+  .resume { display: flex; flex-shrink: 0; width: 816px; height: 1056px; overflow: hidden; background: #ffffff; box-shadow: 0 10px 50px rgba(0,0,0,0.2); border-top: 5px solid #0076CE; font-size: var(--base, 10px); }
   .left { width: 248px; min-width: 248px; background: #0D2137; padding: 2.2em 1.8em 0.8em; display: flex; flex-direction: column; }
   .left-name { font-size: 2.3em; font-weight: 800; color: #ffffff; letter-spacing: 1.5px; text-transform: uppercase; line-height: 1.2; }
   .left-role { font-size: 1.05em; font-weight: 600; color: #0076CE; letter-spacing: 2px; text-transform: uppercase; margin-top: 0.7em; }
@@ -357,6 +357,9 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   await page.goto('file:///' + htmlPath.replace(/\\/g, '/'), { waitUntil: 'networkidle' });
+  // Measure in PRINT media so the auto-fit matches the PDF exactly (screen media has body
+  // padding that shrinks .resume and changes text wrapping -> wrong height).
+  await page.emulateMedia({ media: 'print' });
   await page.waitForTimeout(800);
 
   // Auto-fit: pick the largest --base font so content fills one Letter page (1056px) without
