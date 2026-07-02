@@ -206,29 +206,31 @@ ${bulletLines}
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   body { font-family: 'Inter', Arial, sans-serif; background: #dde3eb; display: flex; justify-content: center; padding: 36px 20px; }
-  .resume { display: flex; width: 816px; min-height: 1056px; overflow: hidden; background: #ffffff; box-shadow: 0 10px 50px rgba(0,0,0,0.2); border-top: 5px solid #0076CE; }
-  .left { width: 248px; min-width: 248px; background: #0D2137; padding: 22px 18px 8px; display: flex; flex-direction: column; }
-  .left-name { font-size: 23px; font-weight: 800; color: #ffffff; letter-spacing: 1.5px; text-transform: uppercase; line-height: 1.2; }
-  .left-role { font-size: 10.5px; font-weight: 600; color: #0076CE; letter-spacing: 2px; text-transform: uppercase; margin-top: 7px; }
-  .left-divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 14px 0; }
-  .section-label { font-size: 9px; font-weight: 700; color: #0076CE; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px; }
-  .contact-item { font-size: 9.5px; color: rgba(255,255,255,0.85); margin-bottom: 5px; line-height: 1.4; }
+  /* --base drives every size (fonts + spacing in em). tailor.js auto-fits it so content fills
+     exactly one Letter page (816x1056px) — no dead space, no overflow to a 2nd page. */
+  .resume { display: flex; width: 816px; height: 1056px; overflow: hidden; background: #ffffff; box-shadow: 0 10px 50px rgba(0,0,0,0.2); border-top: 5px solid #0076CE; font-size: var(--base, 10px); }
+  .left { width: 248px; min-width: 248px; background: #0D2137; padding: 2.2em 1.8em 0.8em; display: flex; flex-direction: column; }
+  .left-name { font-size: 2.3em; font-weight: 800; color: #ffffff; letter-spacing: 1.5px; text-transform: uppercase; line-height: 1.2; }
+  .left-role { font-size: 1.05em; font-weight: 600; color: #0076CE; letter-spacing: 2px; text-transform: uppercase; margin-top: 0.7em; }
+  .left-divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.4em 0; }
+  .section-label { font-size: 0.9em; font-weight: 700; color: #0076CE; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 0.8em; }
+  .contact-item { font-size: 0.95em; color: rgba(255,255,255,0.85); margin-bottom: 0.5em; line-height: 1.4; word-break: break-word; }
   .skills-list { list-style: none; }
-  .skills-list li { font-size: 9.5px; color: rgba(255,255,255,0.85); margin-bottom: 5px; line-height: 1.3; padding-left: 10px; position: relative; }
+  .skills-list li { font-size: 0.95em; color: rgba(255,255,255,0.85); margin-bottom: 0.5em; line-height: 1.3; padding-left: 1em; position: relative; }
   .skills-list li::before { content: '\\25AA'; position: absolute; left: 0; color: #0076CE; }
-  .right { flex: 1; padding: 22px 24px; display: flex; flex-direction: column; }
-  .summary { font-size: 10px; color: #333; line-height: 1.5; margin-bottom: 16px; }
-  .section-header { font-size: 12px; font-weight: 700; color: #0D2137; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #0076CE; padding-bottom: 4px; margin-bottom: 12px; }
-  .job { margin-bottom: 14px; }
-  .job-title { font-size: 11px; font-weight: 700; color: #0D2137; }
-  .job-company { font-size: 9.5px; font-weight: 500; color: #555; margin-bottom: 5px; }
+  .right { flex: 1; padding: 2.2em 2.4em; display: flex; flex-direction: column; }
+  .summary { font-size: 1em; color: #333; line-height: 1.5; margin-bottom: 1.6em; }
+  .section-header { font-size: 1.2em; font-weight: 700; color: #0D2137; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #0076CE; padding-bottom: 0.4em; margin-bottom: 1.2em; }
+  .job { margin-bottom: 1.4em; }
+  .job-title { font-size: 1.1em; font-weight: 700; color: #0D2137; }
+  .job-company { font-size: 0.95em; font-weight: 500; color: #555; margin-bottom: 0.5em; }
   .job-bullets { list-style: none; padding-left: 0; }
-  .job-bullets li { font-size: 9.5px; color: #333; line-height: 1.4; margin-bottom: 4px; padding-left: 12px; position: relative; }
+  .job-bullets li { font-size: 0.95em; color: #333; line-height: 1.4; margin-bottom: 0.4em; padding-left: 1.2em; position: relative; }
   .job-bullets li::before { content: '\\2022'; position: absolute; left: 0; color: #0076CE; }
   .extra-items { list-style: none; padding-left: 0; }
-  .extra-items li { font-size: 9.5px; color: #333; line-height: 1.4; margin-bottom: 6px; padding-left: 12px; position: relative; }
+  .extra-items li { font-size: 0.95em; color: #333; line-height: 1.4; margin-bottom: 0.6em; padding-left: 1.2em; position: relative; }
   .extra-items li::before { content: '\\2022'; position: absolute; left: 0; color: #0076CE; }
-  h3 { font-size: 11px; font-weight: 700; color: #0D2137; margin-bottom: 5px; }
+  h3 { font-size: 1.1em; font-weight: 700; color: #0D2137; margin-bottom: 0.5em; }
   @media print { body { background: #fff; padding: 0; } .resume { box-shadow: none; border-top: none; } }
 </style>
 </head>
@@ -355,7 +357,24 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   await page.goto('file:///' + htmlPath.replace(/\\/g, '/'), { waitUntil: 'networkidle' });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(800);
+
+  // Auto-fit: pick the largest --base font so content fills one Letter page (1056px) without
+  // overflowing to a 2nd page. Fixes dead space (short content) and overflow (long content).
+  const TARGET = 1038; // leave ~18px bottom breathing room under the 1056px page
+  await page.evaluate(() => { const r = document.querySelector('.resume'); if (r) { r.style.height = 'auto'; r.style.overflow = 'visible'; } });
+  let lo = 7, hi = 15, best = 7;
+  for (let i = 0; i < 9; i++) {
+    const mid = (lo + hi) / 2;
+    const h = await page.evaluate(fs => { const r = document.querySelector('.resume'); r.style.setProperty('--base', fs + 'px'); return r.scrollHeight; }, mid);
+    if (h > TARGET) hi = mid; else { best = mid; lo = mid; }
+  }
+  await page.evaluate(fs => { const r = document.querySelector('.resume'); r.style.setProperty('--base', fs + 'px'); r.style.height = '1056px'; r.style.overflow = 'hidden'; }, best);
+  const finalH = await page.evaluate(() => document.querySelector('.resume').scrollHeight);
+  console.log('Auto-fit base font: ' + best.toFixed(2) + 'px (content ' + finalH + 'px / 1056px page)');
+  // Persist the fitted --base into the saved HTML so the .html file matches the PDF
+  fs.writeFileSync(htmlPath, html.replace('.resume {', `.resume { --base: ${best.toFixed(2)}px;`));
+
   await page.pdf({ path: pdfPath, format: 'Letter', printBackground: true, margin: { top: 0, right: 0, bottom: 0, left: 0 } });
   await browser.close();
 

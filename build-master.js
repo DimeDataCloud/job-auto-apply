@@ -112,14 +112,28 @@ function uniqStrings(...lists) {
   }
   return out;
 }
+// Order-independent company key: strips filler words + sorts tokens so "AT&T Cape Reserve
+// Authorized Dealer" == "Cape Reserve AT&T Authorized Dealer" (same job, different phrasing).
+function companyKey(company) {
+  return norm(company).replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\b(authorized|dealer|inc|llc|ltd|the|co|corp|corporation|company|group|services|solutions)\b/g, '')
+    .split(/\s+/).filter(Boolean).sort().join(' ');
+}
 function mergeJobs(...jobLists) {
   const byKey = new Map();
   for (const jobs of jobLists) for (const j of (jobs || [])) {
-    const key = norm(j.company) + '|' + norm(j.title);
-    const cur = byKey.get(key);
+    const key = companyKey(j.company);
     const bullets = Array.isArray(j.bullets) ? j.bullets : String(j.bullets || '').split('\n');
+    const cur = byKey.get(key);
     if (!cur) byKey.set(key, { title: j.title || '', company: j.company || '', location: j.location || '', dates: j.dates || '', bullets: uniqStrings(bullets) });
-    else { cur.bullets = uniqStrings(cur.bullets, bullets); if (!cur.location && j.location) cur.location = j.location; if (!cur.dates && j.dates) cur.dates = j.dates; }
+    else {
+      // Same company across resumes → one entry, union the bullets, keep the richest title/dates.
+      cur.bullets = uniqStrings(cur.bullets, bullets);
+      if ((j.title || '').length > cur.title.length) cur.title = j.title;
+      if ((j.company || '').length > cur.company.length) cur.company = j.company;
+      if (!cur.location && j.location) cur.location = j.location;
+      if ((j.dates || '').length > (cur.dates || '').length) cur.dates = j.dates;
+    }
   }
   return [...byKey.values()];
 }
